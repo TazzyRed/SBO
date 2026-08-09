@@ -4,6 +4,7 @@ import net.minecraft.ChatFormatting.*
 import net.sbo.mod.SBOKotlin.mc
 import net.sbo.mod.overlays.OverlayUtils.LootItemData
 import net.sbo.mod.settings.categories.Diana
+import net.sbo.mod.diana.CoflPricing
 import net.sbo.mod.utils.Helper
 import net.sbo.mod.utils.Helper.calcPercentOne
 import net.sbo.mod.utils.Helper.removeFormatting
@@ -281,7 +282,7 @@ object DianaLoot : DirtyFlushableOverlay() {
 
         val stats = mutableListOf(
             OverlayTextLine("${GRAY}Total Burrows: $AQUA${Helper.formatNumber(totalBurrows, true)}$bphText"),
-            createCoinLine(tracker),
+            createCoinLine(tracker, timer),
             createProfitLine(totalProfitValue, profitPerHr, profitPerBurrow)
         )
 
@@ -291,17 +292,27 @@ object DianaLoot : DirtyFlushableOverlay() {
         return stats
     }
 
-    private fun createCoinLine(tracker: DianaTracker): OverlayTextLine {
-        return OverlayTextLine("${GOLD}Total Coins: $AQUA${Helper.formatNumber(tracker.items.COINS)}" + if (Diana.excludeCoinsFromProfit) " $GRAY[${RED}EXCLUDED$GRAY]" else "")
+    private fun createCoinLine(tracker: DianaTracker, timer: SboTimerManager.SBOTimer): OverlayTextLine {
+        // getCoinsPerHr already does raw -> estimated profit (raw * multiplier) -> / hours, in
+        // that order, so this is a profit/hr figure, not a raw-coins/hr figure.
+        val coinsPerHr = Helper.getCoinsPerHr(tracker, timer)
+        val cphText = if (coinsPerHr.isNaN() || coinsPerHr <= 0.0) "" else " $GRAY[$AQUA${Helper.formatNumber(coinsPerHr)}$GRAY/${AQUA}hr$GRAY]"
+
+        val rawCoins = tracker.items.CROWN_OF_AVARICE_RAW_COINS
+        val multiplier = CoflPricing.getCoinMultiplier()
+        val estimatedProfit = CoflPricing.estimateProfit(rawCoins)
+        val multiplierText = " $GRAY($AQUA${CoflPricing.truncate2(multiplier)}x$GRAY)"
+
+        return OverlayTextLine("${GOLD}Raw Coins: $AQUA${Helper.formatNumber(rawCoins)}$multiplierText$cphText" + if (Diana.excludeCoinsFromProfit) " $GRAY[${RED}EXCLUDED$GRAY]" else "")
             .onHover { drawContext, textRenderer ->
                 val scaleFactor = mc.window.guiScale
                 val mouseX = mc.mouseHandler.xpos() / scaleFactor
                 val mouseY = mc.mouseHandler.ypos() / scaleFactor
                 RenderUtils2D.drawHoveringString(drawContext,
                     "$YELLOW${BOLD}Coin Break Down:\n" +
-                            "${GOLD}Treasure: $AQUA${Helper.formatNumber(tracker.items.COINS - tracker.items.FISH_COINS - tracker.items.SCAVENGER_COINS)}\n" +
-                            "${GOLD}Four-Eyed Fish: $AQUA${Helper.formatNumber(tracker.items.FISH_COINS)}\n" +
-                            "${GOLD}Scavenger: $AQUA${Helper.formatNumber(tracker.items.SCAVENGER_COINS)}",
+                            "${GOLD}Raw collected_coins: $AQUA${Helper.formatNumber(rawCoins)}\n" +
+                            "${GOLD}Multiplier: $AQUA${CoflPricing.truncate2(multiplier)}x\n" +
+                            "${GOLD}Estimated profit: $AQUA${Helper.formatNumber(estimatedProfit)}",
                     mouseX, mouseY, textRenderer)
             }
     }
@@ -325,7 +336,7 @@ object DianaLoot : DirtyFlushableOverlay() {
         for (item in tracker.items::class.java.declaredFields) {
             item.isAccessible = true
             var itemName = item.name
-            if (itemName == "TIME" || itemName == "TOTAL_BURROWS" || itemName == "COINS" || itemName == "SCAVENGER_COINS" || itemName == "FISH_COINS") continue
+            if (itemName == "TIME" || itemName == "TOTAL_BURROWS" || itemName == "COINS" || itemName == "SCAVENGER_COINS" || itemName == "FISH_COINS" || itemName == "CROWN_OF_AVARICE_COINS" || itemName == "CROWN_OF_AVARICE_RAW_COINS") continue
             itemName = itemName.replace("_LS", "")
             val itemValue = item.get(tracker.items) as Int
             if (itemValue <= 0) continue
@@ -334,7 +345,8 @@ object DianaLoot : DirtyFlushableOverlay() {
                 totalProfit += itemPrice * itemValue
             }
         }
-        return if (Diana.excludeCoinsFromProfit) totalProfit else totalProfit + tracker.items.COINS
+        val estimatedCrownProfit = CoflPricing.estimateProfit(tracker.items.CROWN_OF_AVARICE_RAW_COINS)
+        return if (Diana.excludeCoinsFromProfit) totalProfit else totalProfit + estimatedCrownProfit
     }
 
     private fun updateTimerText() {

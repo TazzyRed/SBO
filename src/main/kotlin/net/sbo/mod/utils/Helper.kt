@@ -6,6 +6,7 @@ import net.minecraft.network.chat.Component
 import net.minecraft.world.item.ItemStack
 import net.sbo.mod.SBOKotlin
 import net.sbo.mod.SBOKotlin.mc
+import net.sbo.mod.diana.CoflPricing
 import net.sbo.mod.diana.DianaTracker
 import net.sbo.mod.overlays.DianaLoot
 import net.sbo.mod.settings.categories.Debug
@@ -672,6 +673,14 @@ object Helper {
         val totalMobs = tracker.mobs.TOTAL_MOBS.toDouble()
         val mobsPerHr = totalMobs / hours
         return BigDecimal.valueOf(mobsPerHr).setScale(2, RoundingMode.HALF_UP).toDouble()
+    }
+
+    fun getCoinsPerHr(tracker: DianaTrackerDataClass, timer: SboTimerManager.SBOTimer): Double {
+        val hours = timer.getHourTime()
+        if (hours <= 0.0) return 0.0
+        val totalCoins = CoflPricing.estimateProfit(tracker.items.CROWN_OF_AVARICE_RAW_COINS).toDouble()
+        val coinsPerHr = totalCoins / hours
+        return BigDecimal.valueOf(coinsPerHr).setScale(2, RoundingMode.HALF_UP).toDouble()
     }
 
     fun getChance(mf: Int, looting: Int,rarity: String, lootshare: Boolean = false): Map<String, Double> {

@@ -12,6 +12,7 @@ import net.minecraft.resources.Identifier
 import net.minecraft.util.Util
 import net.sbo.mod.compat.IrisCompatibility
 import net.sbo.mod.diana.DianaMobDetect
+import net.sbo.mod.diana.CrownOfAvariceTracker
 import net.sbo.mod.diana.DianaTracker
 import net.sbo.mod.diana.RareMobHighlight
 import net.sbo.mod.diana.achievements.AchievementManager
@@ -125,6 +126,7 @@ object SBOKotlin : ClientModInitializer {
 		PartyCheck.init()
 		BurrowDetector.init()
 		DianaTracker.init()
+		CrownOfAvariceTracker.init()
 		PartyPlayer.init()
 		Pickuplog.init()
 		OverlayManager.init()

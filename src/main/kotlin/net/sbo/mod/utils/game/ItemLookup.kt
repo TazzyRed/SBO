@@ -19,4 +19,11 @@ class ItemLookup(private val stack: ItemStack) {
         val lines = this.stack.get(DataComponents.LORE)?.lines ?: return@lazy emptyList()
         lines.map { it.toFormattedString() }
     }
+
+    /**
+     * Reads an arbitrary Long-valued key straight out of the item's ExtraAttributes-equivalent
+     * NBT (the same tag [sbId]/[uuid]/[timestamp] are read from). Returns null if the key is
+     * absent, rather than defaulting to 0, so callers can distinguish "no data yet" from "0".
+     */
+    fun getLong(key: String): Long? = this.nbt?.getLong(key)?.orElse(null)
 }

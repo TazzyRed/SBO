@@ -49,6 +49,8 @@ object DianaTracker {
     var lastSpawnedMob: String? = null
 
     fun init() {
+        migrateLegacyCoinSourcesIntoCrown()
+
         Register.command("sboresetsession") {
             DianaLoot.resetSession()
             Chat.chat("§6[SBO] §aDiana session tracker has been reset.")
@@ -155,12 +157,93 @@ object DianaTracker {
         }
     }
 
+    /**
+     * One-time fixup: Treasure, Four-Eyed Fish, and Scavenger coins are all coin sources that
+     * get redirected into a worn Crown of Avarice's NBT instead of the purse, same as anything
+     * else. The old chat-message-based tracking of those three was therefore never accurate
+     * while a crown was worn (this whole feature exists because of that inaccuracy). Rather than
+     * leave stale/wrong numbers sitting in those buckets, fold everything that was ever counted
+     * as Treasure/FISH_COINS/SCAVENGER_COINS into CROWN_OF_AVARICE_RAW_COINS instead, treating the
+     * old chat-message coin amounts as raw collected-coin-equivalent units (same units
+     * collected_coins is in) so they go through the SAME live multiplier as everything tracked
+     * from here on, rather than being frozen in as already-converted coins. Going forward, only
+     * the NBT-based CrownOfAvariceTracker credits new raw coins - see the disabled call sites in
+     * trackScavengerCoins/trackCoinsWithChat/trackBurrowsWithChat below.
+     */
+    private fun migrateLegacyCoinSourcesIntoCrown() {
+        if (!sboData.crownCoinSourcesMerged) {
+            for (tracker in listOf(dianaTrackerMayor, dianaTrackerSession, dianaTrackerTotal)) {
+                tracker.items.CROWN_OF_AVARICE_RAW_COINS += tracker.items.COINS
+                tracker.items.COINS = 0
+                tracker.items.CROWN_OF_AVARICE_COINS = 0
+                tracker.items.FISH_COINS = 0
+                tracker.items.SCAVENGER_COINS = 0
+            }
+            sboData.crownCoinSourcesMerged = true
+        }
+
+        // Second-stage fix: an earlier build of the migration above wrote the merged total into
+        // CROWN_OF_AVARICE_COINS (since removed) instead of CROWN_OF_AVARICE_RAW_COINS, because
+        // that build ran before CoflPricing's price fetch had completed, so it multiplied by a
+        // fallback 1.0 instead of a real multiplier - and being a one-time migration, it never
+        // got another chance to run correctly. Anyone who already ran that build has their total
+        // stranded in the old field with 0 in the new one. Move it over.
+        if (!sboData.crownRawCoinsFixApplied) {
+            for (tracker in listOf(dianaTrackerMayor, dianaTrackerSession, dianaTrackerTotal)) {
+                if (tracker.items.CROWN_OF_AVARICE_COINS > 0) {
+                    tracker.items.CROWN_OF_AVARICE_RAW_COINS += tracker.items.CROWN_OF_AVARICE_COINS
+                    tracker.items.CROWN_OF_AVARICE_COINS = 0
+                }
+            }
+            sboData.crownRawCoinsFixApplied = true
+        }
+
+        sboData.crownCoinSourcesMerged = true
+        SboDataObject.save("SboData")
+        saveTrackerData()
+    }
+
     fun trackScavengerCoins(amount: Long) {
         if (amount <= 0) return
         if (!dianaMobDiedRecently(4)) return
         if (amount > 150000 || !allowScavTracking) return
-        trackItem("SCAVENGER_COINS", amount.toInt())
-        trackItem("COINS", amount.toInt())
+        // Coins here go onto a worn Crown of Avarice's NBT the same as everything else - now
+        // tracked exclusively via CrownOfAvariceTracker's NBT diffing. See
+        // migrateLegacyCoinSourcesIntoCrown() for the retroactive fix to prior data.
+    }
+
+    /**
+     * Adds a raw collected_coins change (from a worn Crown of Avarice's NBT) to the loot tracker.
+     * Deliberately stores ONLY the raw amount - never a pre-multiplied "estimated profit". The
+     * multiplier fluctuates as Coflnet refreshes its price and as /sbocrownprice changes, so
+     * baking a multiplier in at credit time would freeze that individual credit at whatever
+     * multiplier happened to be available in that moment, and old credits would never reflect a
+     * better/updated price later. See CoflPricing.estimateProfit() and DianaLoot.createCoinLine(),
+     * which compute the displayed estimate live off this raw total instead.
+     *
+     * This intentionally does NOT go through [trackItem]. trackItem's isItemOnCooldown gate
+     * silently drops any call for an item key that arrives within 500ms of the previous call for
+     * that same key. That debounce is fine for one-shot chat-message events (which is what it was
+     * built for) but it is NOT fine here: CrownOfAvariceTracker can legitimately fire several
+     * times in quick succession (e.g. a Diana mob death re-check immediately followed by a
+     * loadout-swap re-check). If this went through trackItem, a burst of calls could silently
+     * lose coins instead of just being delayed. trackOne() has no such gate, so we call it
+     * directly and replicate the same bookkeeping trackItem() normally does.
+     */
+    fun trackCrownOfAvariceCoins(rawCollectedDiff: Long) {
+        if (rawCollectedDiff <= 0) return
+        val safeRaw = rawCollectedDiff.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+
+        checkMayorTracker()
+
+        trackOne(dianaTrackerMayor, "CROWN_OF_AVARICE_RAW_COINS", safeRaw)
+        trackOne(dianaTrackerSession, "CROWN_OF_AVARICE_RAW_COINS", safeRaw)
+        trackOne(dianaTrackerTotal, "CROWN_OF_AVARICE_RAW_COINS", safeRaw)
+
+        saveTrackerData()
+        DianaStats.updateLines()
+        DianaLoot.updateLines()
+        SboTimerManager.updateAllActivity()
     }
 
     private fun trackMobsWithChat() {
@@ -318,8 +401,11 @@ object DianaTracker {
 
     private fun trackCoinsWithChat() {
         Register.onChatMessageCancelable(Pattern.compile("^§6§lWow! §eYou dug out §6(.*?) coins§e!$", Pattern.DOTALL)) { message, matchResult ->
-            val coins = matchResult.group(1).replace(",", "").toIntOrNull() ?: 0
-            if (coins > 0) trackItem("COINS", coins)
+            // Previously: trackItem("COINS", coins) using the amount printed in this message.
+            // Disabled - these coins go onto a worn Crown of Avarice's NBT the same as
+            // everything else, so they're now tracked exclusively via CrownOfAvariceTracker's
+            // NBT diffing (which also triggers a recheck off this same message). See
+            // migrateLegacyCoinSourcesIntoCrown() for the retroactive fix to prior data.
             true
         }
     }
@@ -789,17 +875,11 @@ object DianaTracker {
 
     private fun trackBurrowsWithChat() {
         Register.onChatMessageCancelable(Pattern.compile("^§eYou (.*?) Griffin [Bb]urrow(.*?)$", Pattern.DOTALL)) { message, matchResult ->
-            val burrow = matchResult.group(2).removeFormatting()
             trackItem("TOTAL_BURROWS", 1)
-            if (Diana.fourEyedFish) {
-                if (burrow.contains("(2/4)") || burrow.contains("(3/4)")) {
-                    trackItem("FISH_COINS", 4000)
-                    trackItem("COINS", 4000)
-                } else {
-                    trackItem("FISH_COINS", 2000)
-                    trackItem("COINS", 2000)
-                }
-            }
+            // Four-Eyed Fish coins previously credited here (trackItem("FISH_COINS", ...) /
+            // trackItem("COINS", ...)) are disabled - same as Treasure/Scavenger, these coins go
+            // onto a worn Crown of Avarice's NBT and are now tracked exclusively via
+            // CrownOfAvariceTracker's NBT diffing. See migrateLegacyCoinSourcesIntoCrown().
             !QOL.dianaMessageHider
         }
     }
@@ -1049,6 +1129,8 @@ object DianaTracker {
             "ENCHANTED_GOLD" -> tracker.items.ENCHANTED_GOLD += amount
             "SCAVENGER_COINS" -> tracker.items.SCAVENGER_COINS += amount
             "FISH_COINS" -> tracker.items.FISH_COINS += amount
+            "CROWN_OF_AVARICE_COINS" -> tracker.items.CROWN_OF_AVARICE_COINS += amount
+            "CROWN_OF_AVARICE_RAW_COINS" -> tracker.items.CROWN_OF_AVARICE_RAW_COINS += amount
             "TOTAL_BURROWS" -> tracker.items.TOTAL_BURROWS += amount
             // MOBS
             "KING_MINOS" -> tracker.mobs.KING_MINOS += amount

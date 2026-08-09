@@ -81,6 +81,16 @@ object SboTimerManager {
 
         fun isRunning(): Boolean = state == TimerState.Running
 
+        /**
+         * True only when this timer was previously Running and has since gone quiet for
+         * longer than the AFK timeout - as opposed to Idle (never started yet this session).
+         * Used by CrownOfAvariceTracker to tell "this is plausibly the first legitimate gain of
+         * a session" (Idle, allowed) apart from "activity resumed after a real gap" (Paused,
+         * treated with suspicion since coins gained during an untracked gap can't be
+         * attributed to this session).
+         */
+        fun isPaused(): Boolean = state == TimerState.Paused
+
         private fun start() {
             if (state == TimerState.Running || elapsedNanoTime > 0L) return
 

@@ -58,6 +58,16 @@ data class Effect(
 
 // ------ Main Data Class ------
 
+/**
+ * A single tracked physical Crown of Avarice. See SboData.crownTrackedBaselines and
+ * CrownOfAvariceTracker.processCrownReading.
+ */
+data class CrownBaselineEntry(
+    val uuid: String,
+    var coins: Long,
+    var lastSeenMs: Long
+)
+
 data class SboData(
     var effects: List<Effect> = emptyList(),
     var resetVersion: String = "0.1.3",
@@ -89,6 +99,31 @@ data class SboData(
     var b2bChimLsInq: Boolean = false,
     var sboKey: String = "",
     var b2bStreakCounter: MutableMap<String, Int> = mutableMapOf(),
+
+    // How much the player paid/crafted their currently-worn Crown of Avarice for, in coins.
+    // Set via /sbocrownprice. Used together with the Coflnet average full-crown sale price to
+    // estimate a realistic coins-per-collected-coin multiplier instead of counting NBT
+    // collected_coins 1:1 as profit.
+    var crownOfAvariceCostBasis: Long = 0,
+
+    // One-time migration flag: folds legacy Treasure/Four-Eyed Fish/Scavenger coin tracking
+    // (chat-message based, inaccurate once a Crown of Avarice is worn since those coins never
+    // hit the purse) into the crown coin bucket instead. See
+    // DianaTracker.migrateLegacyCoinSourcesIntoCrown.
+    var crownCoinSourcesMerged: Boolean = false,
+
+    // Second-stage fix flag: an earlier version of the migration above wrote the merged total
+    // into CROWN_OF_AVARICE_COINS (a since-removed, pre-multiplied field) instead of
+    // CROWN_OF_AVARICE_RAW_COINS. Anyone who ran that version has their merged total stranded in
+    // the old field. This moves it over, once.
+    var crownRawCoinsFixApplied: Boolean = false,
+
+    // Up to 2 concurrently-tracked Crown of Avarice items (by NBT uuid), each with the last
+    // collected_coins value CrownOfAvariceTracker measured for it. Persisted so that: (a) a
+    // second crown you own but haven't worn yet this session still has a known baseline instead
+    // of starting from scratch whenever you first swap to it, and (b) restarting the game doesn't
+    // lose track of either crown's progress. See CrownOfAvariceTracker.processCrownReading.
+    var crownTrackedBaselines: MutableList<CrownBaselineEntry> = mutableListOf(),
 
     var mobsSinceKing: Int = 0,
     var b2bKing: Boolean = false,
@@ -194,6 +229,8 @@ data class DianaItemsData(
     @SerializedName("Total Burrows") var TOTAL_BURROWS: Int = 0,
     @SerializedName("scavengerCoins") var SCAVENGER_COINS: Long  = 0,
     @SerializedName("fishCoins") var FISH_COINS: Long  = 0,
+    @SerializedName("crownOfAvariceCoins") var CROWN_OF_AVARICE_COINS: Long = 0,
+    @SerializedName("crownOfAvariceRawCoins") var CROWN_OF_AVARICE_RAW_COINS: Long = 0,
     @SerializedName("time") var TIME: Long = 0,
     @SerializedName("KING_MINOS_SHARD") var KING_MINOS_SHARD: Int = 0,
     @SerializedName("SPHINX_SHARD") var SPHINX_SHARD: Int = 0,
