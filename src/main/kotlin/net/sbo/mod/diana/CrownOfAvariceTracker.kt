@@ -57,9 +57,18 @@ object CrownOfAvariceTracker {
     private const val COINS_KEY = "collected_coins"
     private const val MAX_TRACKED_CROWNS = 2
 
-    // A tracked crown at or above this collected_coins value is treated as "likely done/being
-    // replaced" and preferred for eviction (both automatically and by /sbocrownreplace) over a
-    // partially-filled one that's probably still in active use.
+    // A tracked crown that hasn't actually gained any coins in this long is treated as
+    // "abandoned/done" and preferred for eviction over one that's still slowly climbing - see
+    // pickEvictionCandidate. Chosen to comfortably outlast normal gaps between rare mob
+    // encounters (which are irregular, not fixed-interval) without also outlasting genuine
+    // abandonment.
+    private const val STALE_THRESHOLD_MS = 45L * 60 * 1000 // 45 minutes
+
+    // Only used as a fallback when nothing is stale (see pickEvictionCandidate): a tracked crown
+    // at or above this collected_coins value is treated as "likely done" over a partially-filled
+    // one. Deliberately NOT the primary signal - a crown sitting around 100m could either be
+    // freshly abandoned OR a slow-growing second crown that just happens to be passing through
+    // that range, and coin value alone can't tell those apart. Staleness can.
     private const val NEAR_FULL_EVICT_THRESHOLD = 900_000_000L
 
     /** Toggled via /sboverbosecrown - prints each recheck's findings to chat for debugging. */
@@ -111,17 +120,19 @@ object CrownOfAvariceTracker {
             true
         }
 
-        // /sbocrownprice <amount> - sets what you paid/crafted the currently-worn crown for.
-        // Used together with the Coflnet average full-crown sale price to convert raw
-        // collected_coins gains into an estimated real profit instead of counting them 1:1.
+        // /sbocrownprice <amount> - sets a single assumed crown acquisition cost (e.g. current
+        // LBIN) applied to ALL tracked crowns' profit estimates, not just whichever one you're
+        // currently wearing. Used together with the Coflnet average full-crown sale price to
+        // convert raw collected_coins gains into an estimated real profit instead of counting
+        // them 1:1.
         Register.command("sbocrownprice") { args ->
             val amount = args.getOrNull(0)?.replace(",", "")?.toLongOrNull()
             if (amount == null || amount < 0) {
-                Chat.chat("§6[SBO] §cUsage: /sbocrownprice <coins you paid/crafted it for>")
+                Chat.chat("§6[SBO] §cUsage: /sbocrownprice <coins per crown, e.g. current LBIN>")
                 return@command
             }
             CoflPricing.setCostBasis(amount)
-            Chat.chat("§6[SBO] §aCrown of Avarice cost basis set to §e${amount}§a coins.")
+            Chat.chat("§6[SBO] §aCrown acquisition cost set to §e${amount}§a coins - applies to all tracked crowns.")
         }
 
         // Explicitly replaces one of the (up to 2) tracked crown slots with whatever crown is
@@ -221,7 +232,7 @@ object CrownOfAvariceTracker {
                     if (verbose) Chat.chat("§6[SBO] §7recheck: already tracking $MAX_TRACKED_CROWNS crowns, dropped ${target.uuid} (${Helper.formatNumber(target.coins)} collected_coins) to track $uuid instead.")
                 }
             }
-            baselines.add(CrownBaselineEntry(uuid, coins, System.currentTimeMillis()))
+            baselines.add(CrownBaselineEntry(uuid, coins, System.currentTimeMillis(), System.currentTimeMillis()))
             SboDataObject.save("SboData")
             if (verbose) Chat.chat("§6[SBO] §7recheck: new crown uuid=$uuid, baseline established at $coins (no credit given).")
             return
@@ -246,15 +257,18 @@ object CrownOfAvariceTracker {
         // Ownership-change protection: if the total playtime timer was Paused (as opposed to
         // Idle, which is allowed - see isPaused()'s docs) at the moment this jump was found, we
         // can't attribute it to activity we were actually tracking - resync the baseline without
-        // crediting, same as a brand-new uuid.
+        // crediting, same as a brand-new uuid. lastIncreaseMs still advances - the crown itself
+        // genuinely grew, which is what that field means, regardless of whether we credit it.
         if (SboTimerManager.timerTotal.isPaused()) {
             existing.coins = coins
+            existing.lastIncreaseMs = System.currentTimeMillis()
             SboDataObject.save("SboData")
             if (verbose) Chat.chat("§6[SBO] §crecheck: crown $uuid gained $diff while the tracker was paused (away/AFK, or possibly out of your possession) - baseline resynced, NOT credited.")
             return
         }
 
         existing.coins = coins
+        existing.lastIncreaseMs = System.currentTimeMillis()
         SboDataObject.save("SboData")
 
         if (verbose) {
@@ -266,19 +280,30 @@ object CrownOfAvariceTracker {
     }
 
     /**
-     * Prefers evicting a tracked crown that looks "done" (near the 1B cap) over the
-     * least-recently-seen one. A near-full crown is much more likely to have been claimed/sold
-     * and replaced than a partially-filled one you're probably still actively using, so this
-     * reduces (though doesn't eliminate) the odds of an unrelated crown you glimpse only briefly
-     * knocking out a crown you're still actively working on.
+     * Eviction priority, in order:
+     *  1. Stale (no real coin increase in STALE_THRESHOLD_MS) - the strongest "abandoned" signal,
+     *     regardless of what value it stalled at. This is what correctly tells apart "leveled to
+     *     ~100m then moved to a new crown" from "still slowly climbing toward 200m+" - both can
+     *     sit at a similar coin value at any given moment, but only the abandoned one stops
+     *     getting real increases.
+     *  2. Near the 1B cap - only used as a fallback when nothing is stale, since a crown can
+     *     legitimately still be actively growing even near the cap.
+     *  3. Least-recently-seen - final fallback if neither signal applies to anything tracked.
      */
     private fun pickEvictionCandidate(baselines: List<CrownBaselineEntry>): CrownBaselineEntry? {
-        val nearFull = baselines.filter { it.coins >= NEAR_FULL_EVICT_THRESHOLD }
-        return if (nearFull.isNotEmpty()) {
-            nearFull.maxByOrNull { it.coins }
-        } else {
-            baselines.minByOrNull { it.lastSeenMs }
+        val now = System.currentTimeMillis()
+        val stale = baselines.filter { now - it.lastIncreaseMs >= STALE_THRESHOLD_MS }
+        if (stale.isNotEmpty()) {
+            // Among stale candidates, evict whichever has been stale the longest.
+            return stale.minByOrNull { it.lastIncreaseMs }
         }
+
+        val nearFull = baselines.filter { it.coins >= NEAR_FULL_EVICT_THRESHOLD }
+        if (nearFull.isNotEmpty()) {
+            return nearFull.maxByOrNull { it.coins }
+        }
+
+        return baselines.minByOrNull { it.lastSeenMs }
     }
 
     private fun replaceTrackedCrownWithCurrentlyWorn() {
@@ -320,7 +345,7 @@ object CrownOfAvariceTracker {
             }
         }
 
-        baselines.add(CrownBaselineEntry(uuid, coins, System.currentTimeMillis()))
+        baselines.add(CrownBaselineEntry(uuid, coins, System.currentTimeMillis(), System.currentTimeMillis()))
         SboDataObject.save("SboData")
         Chat.chat("§6[SBO] §aNow tracking the crown you're wearing as a fresh baseline (${Helper.formatNumber(coins)} collected_coins so far - no credit for that starting amount).")
     }

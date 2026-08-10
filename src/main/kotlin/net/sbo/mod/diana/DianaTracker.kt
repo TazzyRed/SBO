@@ -49,8 +49,6 @@ object DianaTracker {
     var lastSpawnedMob: String? = null
 
     fun init() {
-        migrateLegacyCoinSourcesIntoCrown()
-
         Register.command("sboresetsession") {
             DianaLoot.resetSession()
             Chat.chat("§6[SBO] §aDiana session tracker has been reset.")
@@ -157,59 +155,12 @@ object DianaTracker {
         }
     }
 
-    /**
-     * One-time fixup: Treasure, Four-Eyed Fish, and Scavenger coins are all coin sources that
-     * get redirected into a worn Crown of Avarice's NBT instead of the purse, same as anything
-     * else. The old chat-message-based tracking of those three was therefore never accurate
-     * while a crown was worn (this whole feature exists because of that inaccuracy). Rather than
-     * leave stale/wrong numbers sitting in those buckets, fold everything that was ever counted
-     * as Treasure/FISH_COINS/SCAVENGER_COINS into CROWN_OF_AVARICE_RAW_COINS instead, treating the
-     * old chat-message coin amounts as raw collected-coin-equivalent units (same units
-     * collected_coins is in) so they go through the SAME live multiplier as everything tracked
-     * from here on, rather than being frozen in as already-converted coins. Going forward, only
-     * the NBT-based CrownOfAvariceTracker credits new raw coins - see the disabled call sites in
-     * trackScavengerCoins/trackCoinsWithChat/trackBurrowsWithChat below.
-     */
-    private fun migrateLegacyCoinSourcesIntoCrown() {
-        if (!sboData.crownCoinSourcesMerged) {
-            for (tracker in listOf(dianaTrackerMayor, dianaTrackerSession, dianaTrackerTotal)) {
-                tracker.items.CROWN_OF_AVARICE_RAW_COINS += tracker.items.COINS
-                tracker.items.COINS = 0
-                tracker.items.CROWN_OF_AVARICE_COINS = 0
-                tracker.items.FISH_COINS = 0
-                tracker.items.SCAVENGER_COINS = 0
-            }
-            sboData.crownCoinSourcesMerged = true
-        }
-
-        // Second-stage fix: an earlier build of the migration above wrote the merged total into
-        // CROWN_OF_AVARICE_COINS (since removed) instead of CROWN_OF_AVARICE_RAW_COINS, because
-        // that build ran before CoflPricing's price fetch had completed, so it multiplied by a
-        // fallback 1.0 instead of a real multiplier - and being a one-time migration, it never
-        // got another chance to run correctly. Anyone who already ran that build has their total
-        // stranded in the old field with 0 in the new one. Move it over.
-        if (!sboData.crownRawCoinsFixApplied) {
-            for (tracker in listOf(dianaTrackerMayor, dianaTrackerSession, dianaTrackerTotal)) {
-                if (tracker.items.CROWN_OF_AVARICE_COINS > 0) {
-                    tracker.items.CROWN_OF_AVARICE_RAW_COINS += tracker.items.CROWN_OF_AVARICE_COINS
-                    tracker.items.CROWN_OF_AVARICE_COINS = 0
-                }
-            }
-            sboData.crownRawCoinsFixApplied = true
-        }
-
-        sboData.crownCoinSourcesMerged = true
-        SboDataObject.save("SboData")
-        saveTrackerData()
-    }
-
     fun trackScavengerCoins(amount: Long) {
         if (amount <= 0) return
         if (!dianaMobDiedRecently(4)) return
         if (amount > 150000 || !allowScavTracking) return
         // Coins here go onto a worn Crown of Avarice's NBT the same as everything else - now
-        // tracked exclusively via CrownOfAvariceTracker's NBT diffing. See
-        // migrateLegacyCoinSourcesIntoCrown() for the retroactive fix to prior data.
+        // tracked exclusively via CrownOfAvariceTracker's NBT diffing.
     }
 
     /**
@@ -404,8 +355,7 @@ object DianaTracker {
             // Previously: trackItem("COINS", coins) using the amount printed in this message.
             // Disabled - these coins go onto a worn Crown of Avarice's NBT the same as
             // everything else, so they're now tracked exclusively via CrownOfAvariceTracker's
-            // NBT diffing (which also triggers a recheck off this same message). See
-            // migrateLegacyCoinSourcesIntoCrown() for the retroactive fix to prior data.
+            // NBT diffing (which also triggers a recheck off this same message).
             true
         }
     }
@@ -879,7 +829,7 @@ object DianaTracker {
             // Four-Eyed Fish coins previously credited here (trackItem("FISH_COINS", ...) /
             // trackItem("COINS", ...)) are disabled - same as Treasure/Scavenger, these coins go
             // onto a worn Crown of Avarice's NBT and are now tracked exclusively via
-            // CrownOfAvariceTracker's NBT diffing. See migrateLegacyCoinSourcesIntoCrown().
+            // CrownOfAvariceTracker's NBT diffing.
             !QOL.dianaMessageHider
         }
     }
@@ -1129,7 +1079,6 @@ object DianaTracker {
             "ENCHANTED_GOLD" -> tracker.items.ENCHANTED_GOLD += amount
             "SCAVENGER_COINS" -> tracker.items.SCAVENGER_COINS += amount
             "FISH_COINS" -> tracker.items.FISH_COINS += amount
-            "CROWN_OF_AVARICE_COINS" -> tracker.items.CROWN_OF_AVARICE_COINS += amount
             "CROWN_OF_AVARICE_RAW_COINS" -> tracker.items.CROWN_OF_AVARICE_RAW_COINS += amount
             "TOTAL_BURROWS" -> tracker.items.TOTAL_BURROWS += amount
             // MOBS

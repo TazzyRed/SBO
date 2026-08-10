@@ -65,7 +65,13 @@ data class Effect(
 data class CrownBaselineEntry(
     val uuid: String,
     var coins: Long,
-    var lastSeenMs: Long
+    var lastSeenMs: Long,
+    // Last time this crown's collected_coins actually WENT UP (as opposed to lastSeenMs, which
+    // updates on every successful read regardless of change). This is what tells apart "leveled
+    // to ~100m/~1b then abandoned for a new crown" (stalled - lastIncreaseMs stops advancing)
+    // from "still slowly climbing" (still gets occasional real bumps, even if rare) - raw coin
+    // value alone can't tell those apart, since both can sit at similar amounts at any moment.
+    var lastIncreaseMs: Long
 )
 
 data class SboData(
@@ -100,23 +106,12 @@ data class SboData(
     var sboKey: String = "",
     var b2bStreakCounter: MutableMap<String, Int> = mutableMapOf(),
 
-    // How much the player paid/crafted their currently-worn Crown of Avarice for, in coins.
-    // Set via /sbocrownprice. Used together with the Coflnet average full-crown sale price to
-    // estimate a realistic coins-per-collected-coin multiplier instead of counting NBT
-    // collected_coins 1:1 as profit.
+    // A single assumed acquisition cost (e.g. current crown LBIN), applied uniformly to EVERY
+    // tracked crown's profit estimate - not tied to a specific physical item or whichever one is
+    // currently worn. Set via /sbocrownprice. Used together with the Coflnet average full-crown
+    // sale price to estimate a realistic coins-per-collected-coin multiplier instead of counting
+    // NBT collected_coins 1:1 as profit.
     var crownOfAvariceCostBasis: Long = 0,
-
-    // One-time migration flag: folds legacy Treasure/Four-Eyed Fish/Scavenger coin tracking
-    // (chat-message based, inaccurate once a Crown of Avarice is worn since those coins never
-    // hit the purse) into the crown coin bucket instead. See
-    // DianaTracker.migrateLegacyCoinSourcesIntoCrown.
-    var crownCoinSourcesMerged: Boolean = false,
-
-    // Second-stage fix flag: an earlier version of the migration above wrote the merged total
-    // into CROWN_OF_AVARICE_COINS (a since-removed, pre-multiplied field) instead of
-    // CROWN_OF_AVARICE_RAW_COINS. Anyone who ran that version has their merged total stranded in
-    // the old field. This moves it over, once.
-    var crownRawCoinsFixApplied: Boolean = false,
 
     // Up to 2 concurrently-tracked Crown of Avarice items (by NBT uuid), each with the last
     // collected_coins value CrownOfAvariceTracker measured for it. Persisted so that: (a) a
@@ -200,6 +195,12 @@ data class PartyFinderData(
 // ------ Diana Data ------
 @Suppress("PropertyName")
 data class DianaItemsData(
+    // COINS, SCAVENGER_COINS, and FISH_COINS are LEGACY/DEAD for live tracking - the chat-message
+    // coin trackers that used to write to them were disabled once CrownOfAvariceTracker's NBT
+    // diffing replaced them (see CROWN_OF_AVARICE_RAW_COINS below, which is the only field
+    // anything live actually reads/writes now). These three are kept ONLY because
+    // PastEventsGui.kt still reads them to display the coin breakdown of events that were
+    // archived BEFORE this change - old, frozen historical records, not anything ongoing.
     @SerializedName("coins") var COINS: Long = 0,
     @SerializedName("Griffin Feather") var GRIFFIN_FEATHER: Int = 0,
     @SerializedName("Mythos Fragment") var MYTHOS_FRAGMENT: Int = 0,
@@ -229,7 +230,7 @@ data class DianaItemsData(
     @SerializedName("Total Burrows") var TOTAL_BURROWS: Int = 0,
     @SerializedName("scavengerCoins") var SCAVENGER_COINS: Long  = 0,
     @SerializedName("fishCoins") var FISH_COINS: Long  = 0,
-    @SerializedName("crownOfAvariceCoins") var CROWN_OF_AVARICE_COINS: Long = 0,
+    // The only coin field anything live actually uses. See CrownOfAvariceTracker.
     @SerializedName("crownOfAvariceRawCoins") var CROWN_OF_AVARICE_RAW_COINS: Long = 0,
     @SerializedName("time") var TIME: Long = 0,
     @SerializedName("KING_MINOS_SHARD") var KING_MINOS_SHARD: Int = 0,

@@ -21,12 +21,13 @@ import net.sbo.mod.utils.data.SboDataObject
  *   (average sale price of a ~full crown over a recent window - cost of the empty crown) / 1e9
  *
  * CONFIRMED against a live response: the analysis endpoint returns "avgPrice" and "medianPrice"
- * at the root of the JSON (we use medianPrice - see extractAveragePrice for why). STILL
- * UNVERIFIED: the exact range-filter syntax for the `CollectedCoins` auction filter, and the
- * exact accepted value format for the `HasRune` boolean filter (assumed "true"/"false" - both
- * assumptions follow the conventions documented on sky.coflnet.com/wiki/filters, but haven't been
- * checked against a live response). If the price seems off, sboverbosecoflnet will print the raw
- * response to check against.
+ * at the root of the JSON (we use medianPrice - see extractAveragePrice for why), and the
+ * `CollectedCoins=min-max` range filter works as expected. Previously tried adding `HasRune` and
+ * `ultimate_habanero_tactics` filters to exclude value-inflated crowns more precisely, but at
+ * least one of their exact accepted formats was wrong and Coflnet rejected the whole request
+ * outright instead of ignoring the bad param - reverted rather than guess again blind (see
+ * maybeRefresh). If the price ever looks wrong, sboverbosecoflnet prints the raw response to
+ * check against.
  */
 object CoflPricing {
     private const val ITEM_TAG = "CROWN_OF_AVARICE"
@@ -100,15 +101,17 @@ object CoflPricing {
         lastFetchAttempt = now
         fetchInFlight = true
 
-        // Beyond CollectedCoins, exclude runed and Habanero Tactics-enchanted crowns specifically -
-        // both are confirmed real Coflnet auction filters, and both can otherwise sell for well
-        // above what a plain crown is worth, pulling the average up. This isn't exhaustive (there
-        // could be other enchants/attributes that add value we're not filtering out), which is
-        // exactly why extractAveragePrice() below prefers the median over the mean as a backstop -
-        // the median is far more resistant to a handful of remaining outlier sales than the mean.
+        // CollectedCoins is the one filter confirmed to actually work (verified against a live
+        // response earlier). HasRune and ultimate_habanero_tactics were added as an attempt to
+        // exclude value-inflated crowns (runes, Habanero Tactics), but at least one of their
+        // exact accepted formats was wrong - Coflnet rejected the whole request with "invalid
+        // parameters in the http url or the post data" instead of just ignoring the bad param(s),
+        // breaking the fetch entirely. Reverted to the known-good query rather than guess again
+        // blind. extractAveragePrice() still prefers the median over the mean as a (weaker, but
+        // functioning) mitigation for the same outlier-price problem those filters were meant to
+        // address more precisely.
         val url = "https://sky.coflnet.com/api/item/price/$ITEM_TAG/analysis" +
-                "?days=$ANALYSIS_DAYS&CollectedCoins=$NEAR_FULL_MIN-$NEAR_FULL_MAX" +
-                "&HasRune=false&ultimate_habanero_tactics=0"
+                "?days=$ANALYSIS_DAYS&CollectedCoins=$NEAR_FULL_MIN-$NEAR_FULL_MAX"
 
         Http.sendGetRequest(url)
             .toJsonObject { json ->

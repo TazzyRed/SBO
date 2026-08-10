@@ -1,7 +1,6 @@
 package net.sbo.mod.general
 
 import net.sbo.mod.SBOKotlin
-import net.sbo.mod.diana.CoflPricing
 import net.sbo.mod.diana.DianaStats
 import net.sbo.mod.overlays.DianaLoot
 import net.sbo.mod.settings.categories.Diana
@@ -162,7 +161,7 @@ object PartyCommands {
             "Feathers: ${dianaTrackerMayor.items.GRIFFIN_FEATHER}"
         },
         PartyCommand(listOf("!coins", "!coin"), { settings.dianaPartyCommands }) {
-            "Coins: ${formatNumber(CoflPricing.estimateProfit(dianaTrackerMayor.items.CROWN_OF_AVARICE_RAW_COINS), withCommas = true)}"
+            "Coins: ${formatNumber(dianaTrackerMayor.items.CROWN_OF_AVARICE_RAW_COINS, withCommas = true)}"
         },
         PartyCommand(listOf("!mobs", "!mob"), { settings.dianaPartyCommands }) {
             val totalMobs = dianaTrackerMayor.mobs.TOTAL_MOBS
