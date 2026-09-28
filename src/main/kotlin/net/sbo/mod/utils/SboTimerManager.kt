@@ -1,9 +1,9 @@
 package net.sbo.mod.utils
 
 import net.sbo.mod.settings.categories.Diana
+import net.sbo.mod.utils.chat.Chat
 import net.sbo.mod.utils.data.DianaTracker
 import net.sbo.mod.utils.data.SboDataObject
-import net.sbo.mod.utils.chat.Chat
 import net.sbo.mod.utils.events.Register
 import net.sbo.mod.utils.events.annotations.SboEvent
 import net.sbo.mod.utils.events.impl.game.DisconnectEvent
@@ -80,16 +80,6 @@ object SboTimerManager {
         }
 
         fun isRunning(): Boolean = state == TimerState.Running
-
-        /**
-         * True only when this timer was previously Running and has since gone quiet for
-         * longer than the AFK timeout - as opposed to Idle (never started yet this session).
-         * Used by CrownOfAvariceTracker to tell "this is plausibly the first legitimate gain of
-         * a session" (Idle, allowed) apart from "activity resumed after a real gap" (Paused,
-         * treated with suspicion since coins gained during an untracked gap can't be
-         * attributed to this session).
-         */
-        fun isPaused(): Boolean = state == TimerState.Paused
 
         private fun start() {
             if (state == TimerState.Running || elapsedNanoTime > 0L) return

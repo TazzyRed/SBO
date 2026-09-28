@@ -41,3 +41,7 @@ replay_*.log
 .kotlin/errors
 
 .kotlin/sessions
+graphify-out/
+
+# local dev login (DevAuth) - account-specific, never commit
+.devauth/

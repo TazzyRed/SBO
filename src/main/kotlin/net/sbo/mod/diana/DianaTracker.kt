@@ -3,11 +3,12 @@ package net.sbo.mod.diana
 import net.sbo.mod.diana.achievements.AchievementManager
 import net.sbo.mod.diana.achievements.AchievementManager.trackMagicFind
 import net.sbo.mod.diana.achievements.AchievementManager.unlockAchievement
+import net.sbo.mod.overlays.DianaCrownTracker
 import net.sbo.mod.overlays.DianaLoot
 import net.sbo.mod.overlays.DianaMobs
 import net.sbo.mod.overlays.DianaStats
 import net.sbo.mod.overlays.MagicFind
-import net.sbo.mod.settings.categories.Customization
+import net.sbo.mod.settings.categories.Debug
 import net.sbo.mod.settings.categories.Diana
 import net.sbo.mod.settings.categories.QOL
 import net.sbo.mod.utils.Helper
@@ -34,6 +35,7 @@ import net.sbo.mod.utils.events.annotations.SboEvent
 import net.sbo.mod.utils.events.impl.game.GameCloseEvent
 import net.sbo.mod.utils.game.Mayor
 import net.sbo.mod.utils.game.World.isInSkyblock
+import net.sbo.mod.utils.medal.MedalIntegration
 import java.util.regex.Pattern
 
 object DianaTracker {
@@ -47,6 +49,7 @@ object DianaTracker {
     private var allowScavTracking: Boolean = true
 
     var lastSpawnedMob: String? = null
+    var lastSpawnedMobTime: Long = 0L
 
     fun init() {
         Register.command("sboresetsession") {
@@ -67,6 +70,10 @@ object DianaTracker {
             SboDataObject.save("SboData")
             SboTimerManager.timerSession.reset()
             DianaStats.updateLines()
+        }
+
+        Register.command("sbotestmedalclip", "sbomedaltest") { args ->
+            MedalIntegration.testClip(args.firstOrNull())
         }
 
         Register.onChatMessageCancelable(
@@ -118,14 +125,20 @@ object DianaTracker {
     }
 
     fun trackWithPickuplog(item: Item) {
-        if (Helper.getSecondsPassed(item.creation) > 5) return
-//            if (!dianaMobDiedRecently(3)) return
+        val createdAt = item.creation
+        val secondsPassedSinceCreation = Helper.getSecondsPassed(createdAt)
+
+        if (secondsPassedSinceCreation > 6) {
+            if (Debug.debugMessages) Chat.chat("debug: not tracking item with creation older than 6 seconds. secondsPassedSinceCreation=$secondsPassedSinceCreation,createdAt=$createdAt")
+            return
+        }
+
         trackWithPickuplog(item.itemId)
     }
 
     private fun trackWithPickuplog(itemId: String) {
         when (itemId) {
-            "HILT_OF_REVELATIONS" -> onRareDrop("Hilt Of Revelations", showMessageOrTitle = true,
+            "HILT_OF_REVELATIONS" -> onRareDrop("Hilt Of Revelations", showMessageOrTitle = Diana.hiltDropMessage,
                 trackLootshare = false,
                 magicFind = 0,
                 actuallyRare = false // makes it show the chat message but not the title
@@ -149,6 +162,7 @@ object DianaTracker {
 
     fun trackWithSacksMessage(itemName: String, amount: Int) {
         if (!allowSackTracking) return
+        if (!dianaMobDiedRecently(4)) return
         val item = itemName.replace("Ingot", "").trim()
         if (sackDrops.contains(item)) {
             trackItem(item, amount)
@@ -159,42 +173,8 @@ object DianaTracker {
         if (amount <= 0) return
         if (!dianaMobDiedRecently(4)) return
         if (amount > 150000 || !allowScavTracking) return
-        // Coins here go onto a worn Crown of Avarice's NBT the same as everything else - now
-        // tracked exclusively via CrownOfAvariceTracker's NBT diffing.
-    }
-
-    /**
-     * Adds a raw collected_coins change (from a worn Crown of Avarice's NBT) to the loot tracker.
-     * Deliberately stores ONLY the raw amount - never a pre-multiplied "estimated profit". The
-     * multiplier fluctuates as Coflnet refreshes its price and as /sbocrownprice changes, so
-     * baking a multiplier in at credit time would freeze that individual credit at whatever
-     * multiplier happened to be available in that moment, and old credits would never reflect a
-     * better/updated price later. See CoflPricing.estimateProfit() and DianaLoot.createCoinLine(),
-     * which compute the displayed estimate live off this raw total instead.
-     *
-     * This intentionally does NOT go through [trackItem]. trackItem's isItemOnCooldown gate
-     * silently drops any call for an item key that arrives within 500ms of the previous call for
-     * that same key. That debounce is fine for one-shot chat-message events (which is what it was
-     * built for) but it is NOT fine here: CrownOfAvariceTracker can legitimately fire several
-     * times in quick succession (e.g. a Diana mob death re-check immediately followed by a
-     * loadout-swap re-check). If this went through trackItem, a burst of calls could silently
-     * lose coins instead of just being delayed. trackOne() has no such gate, so we call it
-     * directly and replicate the same bookkeeping trackItem() normally does.
-     */
-    fun trackCrownOfAvariceCoins(rawCollectedDiff: Long) {
-        if (rawCollectedDiff <= 0) return
-        val safeRaw = rawCollectedDiff.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
-
-        checkMayorTracker()
-
-        trackOne(dianaTrackerMayor, "CROWN_OF_AVARICE_RAW_COINS", safeRaw)
-        trackOne(dianaTrackerSession, "CROWN_OF_AVARICE_RAW_COINS", safeRaw)
-        trackOne(dianaTrackerTotal, "CROWN_OF_AVARICE_RAW_COINS", safeRaw)
-
-        saveTrackerData()
-        DianaStats.updateLines()
-        DianaLoot.updateLines()
-        SboTimerManager.updateAllActivity()
+        trackItem("SCAVENGER_COINS", amount.toInt())
+        trackItem("COINS", amount.toInt())
     }
 
     private fun trackMobsWithChat() {
@@ -215,7 +195,8 @@ object DianaTracker {
 
     private fun onMobSpawn(mob: String, fromCocoon: Boolean = false) {
         lastSpawnedMob = mob
-        if (fromCocoon) Chat.chat("§6[SBO] §eRegistered cocooned mob: $mob")
+        lastSpawnedMobTime = System.nanoTime()
+        //if (fromCocoon) Chat.chat("§6[SBO] §eRegistered cocooned mob: $mob")
         when (mob) {
             "King Minos" -> {
                 DianaMobDetect.onRareSpawn(mob)
@@ -352,10 +333,8 @@ object DianaTracker {
 
     private fun trackCoinsWithChat() {
         Register.onChatMessageCancelable(Pattern.compile("^§6§lWow! §eYou dug out §6(.*?) coins§e!$", Pattern.DOTALL)) { message, matchResult ->
-            // Previously: trackItem("COINS", coins) using the amount printed in this message.
-            // Disabled - these coins go onto a worn Crown of Avarice's NBT the same as
-            // everything else, so they're now tracked exclusively via CrownOfAvariceTracker's
-            // NBT diffing (which also triggers a recheck off this same message).
+            val coins = matchResult.group(1).replace(",", "").toIntOrNull() ?: 0
+            if (coins > 0) trackItem("COINS", coins)
             true
         }
     }
@@ -373,6 +352,7 @@ object DianaTracker {
 
     private fun onBraidedDrop() {
         // TODO: add since message
+        MedalIntegration.saveBraidedFeatherClip()
         onRareDrop("Braided Griffin Feather", showMessageOrTitle = true,
             trackLootshare = false,
             magicFind = 0
@@ -391,6 +371,7 @@ object DianaTracker {
         ) { message, matchResult ->
             val player = matchResult.group(1).removeFormatting().lowercase().trim()
             if (player.contains(Player.getName()?.lowercase()?.trim() ?: "")) {
+                MedalIntegration.saveMythologicalDyeClip()
                 onRareDrop(
                     "Mythological Dye",
                     showMessageOrTitle = true,
@@ -411,7 +392,8 @@ object DianaTracker {
 
         when {
             drop.contains("Shimmering Wool") -> { // todo: add achievements for wool
-                playCustomSound(Customization.woolSound[0], Customization.woolVolume)
+                MedalIntegration.saveWoolClip()
+                playCustomSound(SboDataObject.soundSettingsData.woolSound, volume = SboDataObject.soundSettingsData.woolVolume)
                 onRareDrop("Shimmering Wool", showMessageOrTitle = true,
                     trackLootshare = true,
                     magicFind = magicfind
@@ -455,7 +437,8 @@ object DianaTracker {
 
             }
             drop.contains("Manti-core") -> { // todo: add achievements for core
-                playCustomSound(Customization.coreSound[0], Customization.coreVolume)
+                playCustomSound(SboDataObject.soundSettingsData.coreSound, volume = SboDataObject.soundSettingsData.coreVolume)
+                MedalIntegration.saveMantiCoreClip()
                 onRareDrop("Manti-core", showMessageOrTitle = true,
                     trackLootshare = true,
                     magicFind = magicfind
@@ -499,7 +482,8 @@ object DianaTracker {
 
             }
             drop.contains("Fateful Stinger") -> { // todo: add achievements for stinger
-                playCustomSound(Customization.stingerSound[0], Customization.stingerVolume)
+                playCustomSound(SboDataObject.soundSettingsData.stingerSound, volume = SboDataObject.soundSettingsData.stingerVolume)
+                MedalIntegration.saveFatefulStingerClip()
                 onRareDrop("Fateful Stinger", showMessageOrTitle = true,
                     trackLootshare = true,
                     magicFind = magicfind
@@ -543,10 +527,12 @@ object DianaTracker {
             drop.contains("Enchanted Book") -> {
                 if (!drop.contains("Chimera")) return
 
-                playCustomSound(Customization.chimSound[0], Customization.chimVolume)
+                MedalIntegration.saveChimeraClip()
+                playCustomSound(SboDataObject.soundSettingsData.chimSound, volume = SboDataObject.soundSettingsData.chimVolume)
                 onRareDrop("Chimera", showMessageOrTitle = true,
                     trackLootshare = true,
-                    magicFind = magicfind
+                    magicFind = magicfind,
+                    enforceCooldown = false // lootsharing from own inquisitor is possible, which allows to drop 2 chimeras from a single inquisitor of yours, so we need to not early return if isItemOnCooldown
                 )
 
                 if (!isLootShare) {
@@ -592,7 +578,8 @@ object DianaTracker {
                 }
             }
             drop.contains("Brain Food") -> { // todo: add achievements for food
-                playCustomSound(Customization.bfSound[0], Customization.bfVolume)
+                MedalIntegration.saveBrainFoodClip()
+                playCustomSound(SboDataObject.soundSettingsData.bfSound, volume = SboDataObject.soundSettingsData.bfVolume)
                 onRareDrop("Brain Food", showMessageOrTitle = true,
                     trackLootshare = true,
                     magicFind = magicfind
@@ -637,7 +624,8 @@ object DianaTracker {
                 }
             }
             drop.contains("Daedalus Stick") -> {
-                playCustomSound(Customization.stickSound[0], Customization.stickVolume)
+                playCustomSound(SboDataObject.soundSettingsData.stickSound, volume = SboDataObject.soundSettingsData.stickVolume)
+                MedalIntegration.saveDaedalusStickClip()
                 onRareDrop("Daedalus Stick", showMessageOrTitle = true,
                     trackLootshare = false,
                     magicFind = magicfind
@@ -658,7 +646,8 @@ object DianaTracker {
                 announceLootToParty("Daedalus Stick", "Daedalus Stick$mfPrefix", amount = dianaTrackerMayor.items.DAEDALUS_STICK)
             }
             drop.contains("Minos Relic") -> {
-                playCustomSound(Customization.relicSound[0], Customization.relicVolume)
+                MedalIntegration.saveMinosRelicClip()
+                playCustomSound(SboDataObject.soundSettingsData.relicSound, volume = SboDataObject.soundSettingsData.relicVolume)
                 onRareDrop("Minos Relic", showMessageOrTitle = true,
                     trackLootshare = false,
                     magicFind = magicfind
@@ -678,40 +667,45 @@ object DianaTracker {
                 announceLootToParty("Minos Relic", "Minos Relic$mfPrefix", amount = dianaTrackerMayor.items.MINOS_RELIC)
             }
             drop.contains("Washed-up Souvenir") -> {
+                MedalIntegration.saveWashedUpSouvenirClip()
                 onRareDrop("Washed-up Souvenir", showMessageOrTitle = false,
                     trackLootshare = false,
                     magicFind = magicfind
                 )
-                playCustomSound(Customization.miscDropSound[0], Customization.miscDropVolume)
+                playCustomSound(SboDataObject.soundSettingsData.miscDropSound, volume = SboDataObject.soundSettingsData.miscDropVolume)
             }
             drop.contains("Dwarf Turtle Shelmet") -> {
+                MedalIntegration.saveDwarfTurtleShelmetClip()
                 onRareDrop("Dwarf Turtle Shelmet", showMessageOrTitle = false,
                     trackLootshare = false,
                     magicFind = magicfind
                 )
-                playCustomSound(Customization.miscDropSound[0], Customization.miscDropVolume)
+                playCustomSound(SboDataObject.soundSettingsData.miscDropSound, volume = SboDataObject.soundSettingsData.miscDropVolume)
             }
             drop.contains("Crochet Tiger Plushie") -> {
+                MedalIntegration.saveCrochetTigerPlushieClip()
                 onRareDrop("Crochet Tiger Plushie", showMessageOrTitle = false,
                     trackLootshare = false,
                     magicFind = magicfind
                 )
-                playCustomSound(Customization.miscDropSound[0], Customization.miscDropVolume)
+                playCustomSound(SboDataObject.soundSettingsData.miscDropSound, volume = SboDataObject.soundSettingsData.miscDropVolume)
             }
             drop.contains("Antique Remedies") -> {
+                MedalIntegration.saveAntiqueRemediesClip()
                 onRareDrop("Antique Remedies",
                     showMessageOrTitle = false,
                     trackLootshare = false,
                     magicFind = magicfind
                 )
-                playCustomSound(Customization.miscDropSound[0], Customization.miscDropVolume)
+                playCustomSound(SboDataObject.soundSettingsData.miscDropSound, volume = SboDataObject.soundSettingsData.miscDropVolume)
             }
             drop.contains("Cretan Urn") -> {
+                MedalIntegration.saveCretanUrnClip()
                 onRareDrop("Cretan Urn", showMessageOrTitle = false,
                     trackLootshare = false,
                     magicFind = magicfind
                 )
-                playCustomSound(Customization.miscDropSound[0], Customization.miscDropVolume)
+                playCustomSound(SboDataObject.soundSettingsData.miscDropSound, volume = SboDataObject.soundSettingsData.miscDropVolume)
             }
             drop.contains("Hilt of Revelations") -> {
                 onRareDrop("Hilt of Revelations", showMessageOrTitle = false,
@@ -724,8 +718,8 @@ object DianaTracker {
         SboDataObject.save("SboData")
     }
 
-    private fun onRareDrop(item: String, showMessageOrTitle: Boolean, trackLootshare: Boolean, magicFind: Int, amount: Int = 1, actuallyRare: Boolean = true) {
-        if (isItemOnCooldown.getOrDefault(item, false)) return
+    private fun onRareDrop(item: String, showMessageOrTitle: Boolean, trackLootshare: Boolean, magicFind: Int, amount: Int = 1, actuallyRare: Boolean = true, enforceCooldown: Boolean = true) {
+        if (isItemOnCooldown.getOrDefault(item, false) && enforceCooldown) return
 
         val itemId = item.uppercase().replace(" ", "_").replace("-", "_")
 
@@ -736,11 +730,14 @@ object DianaTracker {
 
         if (isCoG || itemId == "HILT_OF_REVELATIONS") {
             // onRareDrop for these drops are called from both the pickup log tracker and rare drop message, so we need to handle the sound and announceLootToParty here instead of rare drop message handler to make both pickuplog and rare drop message trigger the sound/party announce while preventing duplicates (due to isItemOnCooldown check above)
-            playCustomSound(Customization.miscDropSound[0], Customization.miscDropVolume)
+            playCustomSound(SboDataObject.soundSettingsData.miscDropSound, volume = SboDataObject.soundSettingsData.miscDropVolume)
 
             if (isCoG) {
+                MedalIntegration.saveCrownOfGreedClip()
                 // CoG is no longer a treasure and instead dropped by Minos King; worth announcing
                 announceLootToParty("Crown of Greed", "Crown of Greed$mfPrefix", amount = dianaTrackerMayor.items.CROWN_OF_GREED + 1) // we didn't call trackItem yet, so add + 1
+            } else {
+                MedalIntegration.saveHiltOfRevelationsClip()
             }
         }
 
@@ -766,7 +763,7 @@ object DianaTracker {
             else -> Triple("§f", -1, -1) // shouldn't happen
         }
 
-        val price = if (Diana.lootAnnouncerPrice) "§6${Helper.getItemPriceFormatted(itemId, amount)} coins" else ""
+        val price = "§6${Helper.getItemPriceFormatted(itemId, amount)} coins"
 
         val ls = gotLootShareRecently()
         val lsText = if (ls) " (LS)" else ""
@@ -774,14 +771,16 @@ object DianaTracker {
         var count = ""
 
         val rawCount = colorAndCount.second
-        val realCount = if (rawCount != -1) rawCount + 1 else -1 // we didn't call trackItem yet, avoids being #0
+        val realCount = if (rawCount != -1) rawCount + if (!ls) 1 else 0 else -1 // we didn't call trackItem yet, avoids being #0
 
         val rawLsCount = colorAndCount.third
-        val realLsCount = if (rawLsCount != -1) rawLsCount + 1 else -1 // we didn't call trackItem yet, avoids being #0
+        val realLsCount = if (rawLsCount != -1) rawLsCount + if (ls) 1 else 0 else -1 // we didn't call trackItem yet, avoids being #0
 
         if (realCount != -1) {
             count = if (realLsCount != -1 && ls) {
-                " Total #$realCount LS #$realLsCount"
+                " Total #${realCount + realLsCount} LS #$realLsCount"
+            } else if (realLsCount != -1) {
+                " #${realCount + realLsCount}"
             } else {
                 " #$realCount"
             }
@@ -817,19 +816,15 @@ object DianaTracker {
         }
 
         if (trackLootshare && isLootShare) {
-            trackItem(itemId + "_LS", amount)
+            trackItem(itemId + "_LS", amount, enforceCooldown)
         } else {
-            trackItem(itemId, amount)
+            trackItem(itemId, amount, enforceCooldown)
         }
     }
 
     private fun trackBurrowsWithChat() {
-        Register.onChatMessageCancelable(Pattern.compile("^§eYou (.*?) Griffin [Bb]urrow(.*?)$", Pattern.DOTALL)) { message, matchResult ->
+        Register.onChatMessageCancelable(Pattern.compile("^§eYou (.*?) Griffin [Bb]urrow(.*?)$", Pattern.DOTALL)) { _, _ ->
             trackItem("TOTAL_BURROWS", 1)
-            // Four-Eyed Fish coins previously credited here (trackItem("FISH_COINS", ...) /
-            // trackItem("COINS", ...)) are disabled - same as Treasure/Scavenger, these coins go
-            // onto a worn Crown of Avarice's NBT and are now tracked exclusively via
-            // CrownOfAvariceTracker's NBT diffing.
             !QOL.dianaMessageHider
         }
     }
@@ -840,9 +835,7 @@ object DianaTracker {
         val custom = customMsg != null
         if (custom) msg = customMsg.removeFormatting()
 
-        if (replaceDropMessage) {
-            if (custom) Chat.chat(customMsg)
-        } else {
+        if (!replaceDropMessage) {
             val itemId = item.uppercase().replace(" ", "_").replace("-", "_")
             val price = Helper.getItemPriceFormatted(itemId)
             val priceStr = if (price != "0") " (+$price coins)" else ""
@@ -903,6 +896,7 @@ object DianaTracker {
 
     private fun resetMayorTracker(check: Boolean = false) {
         if (!check) {
+            if (dianaTrackerMayor.year == 0) dianaTrackerMayor.year = Mayor.mayorElectedYear
             pastDianaEventsData.events += dianaTrackerMayor.snapshot()
             SboDataObject.save("PastDianaEventsData")
         }
@@ -911,8 +905,10 @@ object DianaTracker {
         dianaTrackerMayor.save()
         SboTimerManager.timerMayor.reset()
         SboTimerManager.activeTimers.forEach { it.pause() }
+        LoadoutCrownTracker.resetEventGain()
         DianaMobs.updateLines()
         DianaLoot.updateLines()
+        DianaCrownTracker.updateLines()
         Chat.chat("§6[SBO] §aDiana mayor tracker has been reset.")
     }
 
@@ -973,6 +969,7 @@ object DianaTracker {
     private fun trackMythTheFish() {
         Register.onChatMessage(Regex("^(.*?) §eYou just dug out(.*?)$")) { message, matchResult ->
             if (matchResult.groupValues[2].contains("Myth the Fish")) {
+                MedalIntegration.saveMythTheFishClip()
                 onRareDrop("Myth the Fish",
                     showMessageOrTitle = true,
                     trackLootshare = false,
@@ -1005,8 +1002,8 @@ object DianaTracker {
         }
     }
 
-    fun trackItem(item: String, amount: Int) {
-        if (isItemOnCooldown.getOrDefault(item, false)) return
+    fun trackItem(item: String, amount: Int, enforceCooldown: Boolean = true) {
+        if (isItemOnCooldown.getOrDefault(item, false) && enforceCooldown) return
         isItemOnCooldown[item] = true
 
         checkMayorTracker()
@@ -1079,7 +1076,6 @@ object DianaTracker {
             "ENCHANTED_GOLD" -> tracker.items.ENCHANTED_GOLD += amount
             "SCAVENGER_COINS" -> tracker.items.SCAVENGER_COINS += amount
             "FISH_COINS" -> tracker.items.FISH_COINS += amount
-            "CROWN_OF_AVARICE_RAW_COINS" -> tracker.items.CROWN_OF_AVARICE_RAW_COINS += amount
             "TOTAL_BURROWS" -> tracker.items.TOTAL_BURROWS += amount
             // MOBS
             "KING_MINOS" -> tracker.mobs.KING_MINOS += amount

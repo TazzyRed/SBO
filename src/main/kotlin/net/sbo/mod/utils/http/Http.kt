@@ -13,23 +13,21 @@ import java.net.http.HttpResponse.BodyHandlers
 import java.time.Duration
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.ThreadFactory
 
 object Http {
-    private const val CONNECT_TIMEOUT = 20_000L
-    private const val REQUEST_TIMEOUT = 20_000L
+    private const val CONNECT_TIMEOUT = 30_000L
+    private const val REQUEST_TIMEOUT = 30_000L
 
     private val USER_AGENT =
         "SBO-Kotlin-Mod/${SBOKotlin.version}+${SharedConstants.getCurrentVersion().name()}"
 
     private val EXECUTOR: ExecutorService = Executors.newFixedThreadPool(
-        Runtime.getRuntime().availableProcessors() * 2,
-        ThreadFactory { runnable ->
-            Thread(runnable, "SBO Http Request Thread").apply {
-                isDaemon = true
-            }
+        Runtime.getRuntime().availableProcessors() * 2
+    ) { runnable ->
+        Thread(runnable, "SBO Http Request Thread").apply {
+            isDaemon = true
         }
-    )
+    }
 
     private val HTTP_3_OR_2: HttpClient.Version = http3WithFallback()
 
@@ -40,10 +38,10 @@ object Http {
         .build()
 
     private fun http3WithFallback(): HttpClient.Version {
-        try {
-            return HttpClient.Version.valueOf("HTTP_3") // Available since Java 26 (JEP 517: HTTP/3 for the HTTP Client API)
+        return try {
+            HttpClient.Version.valueOf("HTTP_3") // Available since Java 26 (JEP 517: HTTP/3 for the HTTP Client API)
         } catch (ignored: IllegalArgumentException) {
-            return HttpClient.Version.HTTP_2 // Fallback to baseline of HTTP/2
+            HttpClient.Version.HTTP_2 // Fallback to baseline of HTTP/2
         }
     }
 
@@ -57,26 +55,53 @@ object Http {
      * Sends an asynchronous HTTP GET request.
      *
      * @param urlString The URL to send the request to.
+     * @param headers Additional request headers, e.g. the `x-sbo-key` header for authenticated SBO endpoints.
      * @return An [HttpRequestHandle] to which .result() and .error() can be chained.
      */
-    fun sendGetRequest(urlString: String): HttpRequestHandle {
+    fun sendGetRequest(urlString: String, headers: Map<String, String> = emptyMap()): HttpRequestHandle =
+        send(urlString, headers) { it.GET() }
+
+    /**
+     * Sends an asynchronous HTTP POST request with a JSON body.
+     *
+     * The `Content-Type: application/json` header is set automatically.
+     *
+     * @param urlString The URL to send the request to.
+     * @param body The JSON body to send. Defaults to an empty object for endpoints that take no payload.
+     * @param headers Additional request headers, e.g. the `x-sbo-key` header for authenticated SBO endpoints.
+     * @return An [HttpRequestHandle] to which .result() and .error() can be chained.
+     */
+    fun sendPostRequest(
+        urlString: String,
+        body: String = "{}",
+        headers: Map<String, String> = emptyMap()
+    ): HttpRequestHandle = send(urlString, headers + ("Content-Type" to "application/json")) {
+        it.POST(HttpRequest.BodyPublishers.ofString(body, Charsets.UTF_8))
+    }
+
+    private fun send(
+        urlString: String,
+        headers: Map<String, String>,
+        method: (HttpRequest.Builder) -> HttpRequest.Builder
+    ): HttpRequestHandle {
         val handle = HttpRequestHandle()
-
-        val uri = URI.create(urlString)
-        val httpVersion = if (uri.host in HTTP2_ONLY) HttpClient.Version.HTTP_2 else HTTP_3_OR_2
-
-        val request = HttpRequest.newBuilder()
-            .version(httpVersion)
-            .uri(uri)
-            .timeout(Duration.ofMillis(REQUEST_TIMEOUT))
-            .header("User-Agent", USER_AGENT)
-            .GET()
-            .build()
 
         EXECUTOR.execute {
             try {
-                val response = CLIENT.send(request, BodyHandlers.ofInputStream())
+                val uri = URI.create(urlString)
+                val httpVersion = if (uri.host in HTTP2_ONLY) HttpClient.Version.HTTP_2 else HTTP_3_OR_2
+
+                val builder = HttpRequest.newBuilder()
+                    .version(httpVersion)
+                    .uri(uri)
+                    .timeout(Duration.ofMillis(REQUEST_TIMEOUT))
+                    .header("User-Agent", USER_AGENT)
+
+                headers.forEach { (name, value) -> builder.header(name, value) }
+
+                val response = CLIENT.send(method(builder).build(), BodyHandlers.ofInputStream())
                 val code = response.statusCode()
+
                 handle.complete(
                     HttpResponse(
                         code,
@@ -100,32 +125,26 @@ object Http {
      */
     private fun statusMessage(code: Int): String {
         return when (code) {
-            400 -> "Bad request"
+            400 -> "Bad Request"
             401 -> "Unauthorized"
             403 -> "Forbidden"
-            404 -> "Not found"
-            408 -> "Request timed out"
+            404 -> "Not Found"
+            408 -> "Request Timed Out"
             409 -> "Conflict"
-            418 -> "Invalid request"
-            422 -> "Invalid data"
-            429 -> "Too many requests"
-            500 -> "Server error"
-            502 -> "Bad gateway"
-            503 -> "Service unavailable"
-            504 -> "Gateway timeout"
-            else -> "HTTP error $code"
+            418 -> "Invalid Request"
+            422 -> "Invalid Data"
+            429 -> "Too Many Requests"
+            500 -> "Server Error"
+            502 -> "Bad Gateway"
+            503 -> "Service Unavailable"
+            504 -> "Gateway Timeout"
+            else -> "HTTP Error $code"
         }
     }
 
-    fun JsonObject.getBoolean(key: String): Boolean {
-        return this[key]?.jsonPrimitive?.booleanOrNull ?: false
-    }
+    fun JsonObject.getBoolean(key: String): Boolean = this[key]?.jsonPrimitive?.booleanOrNull ?: false
 
-    fun JsonObject.getString(key: String): String? {
-        return this[key]?.jsonPrimitive?.contentOrNull
-    }
+    fun JsonObject.getString(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
 
-    fun JsonObject.getInt(key: String): Int? {
-        return this[key]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
-    }
+    fun JsonObject.getInt(key: String): Int? = this[key]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
 }

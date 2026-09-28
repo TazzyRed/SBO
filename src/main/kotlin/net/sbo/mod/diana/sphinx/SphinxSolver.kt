@@ -3,6 +3,7 @@ package net.sbo.mod.diana.sphinx
 import net.minecraft.client.gui.screens.ChatScreen
 import net.minecraft.network.chat.Component
 import net.sbo.mod.settings.categories.Diana
+import net.sbo.mod.settings.categories.QOL
 import net.sbo.mod.utils.Helper
 import net.sbo.mod.utils.Helper.removeFormatting
 import net.sbo.mod.utils.chat.Chat
@@ -43,22 +44,29 @@ object SphinxSolver {
         Register.onChatMessageCancelable(
             Pattern.compile("^(.*?)$", Pattern.DOTALL)
         ) { message, matchResult ->
-            if (!Diana.sphinxSolver) return@onChatMessageCancelable true
+            // Cheap fast-path: this pattern matches literally every chat message,
+            // so skip the question-list scan entirely unless something actually
+            // cares about the result (either feature is off -> nothing to do).
+            if (!Diana.sphinxSolver && !QOL.dianaMessageHider) return@onChatMessageCancelable true
+
             val questionText = matchResult.group(1).trim()
-            for (sphinxQuestion in SphinxQuestions.QUESTIONS) {
-                if (sphinxQuestion.question.equals(questionText.removeFormatting(), ignoreCase = true)) {
-                    Helper.sleep(100) {
-                        Chat.chat("§6[SBO] §bClick anywhere on the screen to answer while the chat is open.")
-                    }
+            val isKnownQuestion = SphinxQuestions.QUESTIONS.any {
+                it.question.equals(questionText.removeFormatting(), ignoreCase = true)
+            }
+            if (isKnownQuestion && Diana.sphinxSolver) {
+                Helper.sleep(100) {
+                    Chat.chat("§6[SBO] §bClick anywhere on the screen to answer while the chat is open.")
                 }
             }
-            true
+            // Hiding the raw question text is independent of auto-solving - someone
+            // can want the clutter gone from chat without wanting it auto-answered.
+            !(isKnownQuestion && QOL.dianaMessageHider)
         }
 
         Register.onChatMessageCancelable(
             Pattern.compile("^§7 {3}([ABC])\\) §f(.*?)$")
         ) { msg, matcher ->
-            if (!Diana.sphinxSolver) return@onChatMessageCancelable true
+            if (!Diana.sphinxSolver) return@onChatMessageCancelable !QOL.dianaMessageHider
 
             val letter = matcher.group(1)
             val possibleAnswer = matcher.group(2).trim()

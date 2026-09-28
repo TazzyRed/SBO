@@ -11,13 +11,17 @@ import net.minecraft.network.chat.Component
 import net.minecraft.resources.Identifier
 import net.minecraft.util.Util
 import net.sbo.mod.compat.IrisCompatibility
+import net.sbo.mod.diana.CrownMarket
 import net.sbo.mod.diana.DianaMobDetect
-import net.sbo.mod.diana.CrownOfAvariceTracker
 import net.sbo.mod.diana.DianaTracker
+import net.sbo.mod.diana.LoadoutCrownTracker
+import net.sbo.mod.diana.DeadMobHighlight
 import net.sbo.mod.diana.RareMobHighlight
+import net.sbo.mod.diana.TestTimer
 import net.sbo.mod.diana.achievements.AchievementManager
 import net.sbo.mod.diana.achievements.AchievementManager.unlockAchievement
 import net.sbo.mod.diana.burrows.BurrowDetector
+import net.sbo.mod.diana.burrows.BurrowPrediction
 import net.sbo.mod.diana.sphinx.SphinxSolver
 import net.sbo.mod.general.HelpCommand
 import net.sbo.mod.general.PartyCommands
@@ -57,15 +61,6 @@ object SBOKotlin : ClientModInitializer {
 	lateinit var mcVersion: String
 
 	fun id(path: String, owner: String = MOD_ID): Identifier = Identifier.fromNamespaceAndPath(owner, path)
-
-    fun userSuppliedId(path: String, owner: String = MOD_ID, onInvalid: (IdentifierException) -> Unit): Identifier? {
-        return try {
-            id(path = path, owner = owner)
-        } catch (invalidIdentifierException: IdentifierException) {
-            onInvalid(invalidIdentifierException)
-            null
-        }
-    }
 
     fun toast(title: Component, message: Component) {
         mc.toastManager.addToast(
@@ -125,8 +120,8 @@ object SBOKotlin : ClientModInitializer {
 		PartyFinderManager.init()
 		PartyCheck.init()
 		BurrowDetector.init()
+		BurrowPrediction.init()
 		DianaTracker.init()
-		CrownOfAvariceTracker.init()
 		PartyPlayer.init()
 		Pickuplog.init()
 		OverlayManager.init()
@@ -139,10 +134,15 @@ object SBOKotlin : ClientModInitializer {
 		DianaMobs.init()
 		DianaMobDetect.init()
 		DianaLoot.init()
+		LoadoutCrownTracker.init()
+		CrownMarket.init()
+		TestTimer.init()
+		DianaCrownTracker.init()
 		AchievementManager.init()
 		MessageHider.init()
 		SphinxSolver.init()
 		RareMobHighlight.init()
+		DeadMobHighlight.init()
 		InventoryUtils.init()
 		Chains.init()
 
@@ -158,7 +158,7 @@ object SBOKotlin : ClientModInitializer {
 		}
 
 		if (FabricLoader.getInstance().isModLoaded("iris")) {
-			IrisCompatibility.init()
+		    IrisCompatibility.init()
 		}
 
 		logger.info("SBO-Kotlin initialized successfully!")

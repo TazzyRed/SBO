@@ -44,7 +44,8 @@ data class SboConfigBundle(
     var dianaTrackerMayorData: DianaTrackerMayorData,
     var partyFinderConfigState: PartyFinderConfigState,
     var partyFinderData: PartyFinderData,
-    var overlayData: OverlayData
+    var overlayData: OverlayData,
+    var soundSettingsData: SoundSettingsData
 )
 
 // ------ Data Classes ------
@@ -57,22 +58,6 @@ data class Effect(
 )
 
 // ------ Main Data Class ------
-
-/**
- * A single tracked physical Crown of Avarice. See SboData.crownTrackedBaselines and
- * CrownOfAvariceTracker.processCrownReading.
- */
-data class CrownBaselineEntry(
-    val uuid: String,
-    var coins: Long,
-    var lastSeenMs: Long,
-    // Last time this crown's collected_coins actually WENT UP (as opposed to lastSeenMs, which
-    // updates on every successful read regardless of change). This is what tells apart "leveled
-    // to ~100m/~1b then abandoned for a new crown" (stalled - lastIncreaseMs stops advancing)
-    // from "still slowly climbing" (still gets occasional real bumps, even if rare) - raw coin
-    // value alone can't tell those apart, since both can sit at similar amounts at any moment.
-    var lastIncreaseMs: Long
-)
 
 data class SboData(
     var effects: List<Effect> = emptyList(),
@@ -106,20 +91,6 @@ data class SboData(
     var sboKey: String = "",
     var b2bStreakCounter: MutableMap<String, Int> = mutableMapOf(),
 
-    // A single assumed acquisition cost (e.g. current crown LBIN), applied uniformly to EVERY
-    // tracked crown's profit estimate - not tied to a specific physical item or whichever one is
-    // currently worn. Set via /sbocrownprice. Used together with the Coflnet average full-crown
-    // sale price to estimate a realistic coins-per-collected-coin multiplier instead of counting
-    // NBT collected_coins 1:1 as profit.
-    var crownOfAvariceCostBasis: Long = 0,
-
-    // Up to 2 concurrently-tracked Crown of Avarice items (by NBT uuid), each with the last
-    // collected_coins value CrownOfAvariceTracker measured for it. Persisted so that: (a) a
-    // second crown you own but haven't worn yet this session still has a known baseline instead
-    // of starting from scratch whenever you first swap to it, and (b) restarting the game doesn't
-    // lose track of either crown's progress. See CrownOfAvariceTracker.processCrownReading.
-    var crownTrackedBaselines: MutableList<CrownBaselineEntry> = mutableListOf(),
-
     var mobsSinceKing: Int = 0,
     var b2bKing: Boolean = false,
     var kingSinceWool: Int = 0,
@@ -144,6 +115,95 @@ data class SboData(
     var b2bFood: Boolean = false,
     var sphinxSinceLsFood: Int = 0,
     var b2bFoodLs: Boolean = false,
+
+    var lastStatsProfile: String = "",
+
+    // Crown of Avarice loadout tracking - see LoadoutCrownTracker
+    var crownTrackedBaselines: MutableList<CrownBaselineEntry> = mutableListOf(),
+    var crownLoadoutSwapCounts: MutableMap<String, Int> = mutableMapOf(),
+    // Lifetime / current-mayor-term crown coin gain, shown by the "Coins This
+    // Total/Event" line in DianaCrownTracker. Session gain is intentionally not
+    // persisted here - see LoadoutCrownTracker.lootTrackerTotalGained.
+    var crownGainedTotal: Long = 0L,
+    var crownGainedEvent: Long = 0L,
+    // Cost basis set via /sbocrown price, keyed by the physical crown's own uuid
+    // rather than a loadout name - this way it works the moment you're wearing
+    // the crown, without needing it to already be a tracked/confirmed loadout.
+    // Applied to a CrownBaselineEntry as soon as one exists for that uuid; its
+    // mere presence here means the price was set manually (this map only ever
+    // gets written by /sbocrown price).
+    var crownCostBasisByUuid: MutableMap<String, Long> = mutableMapOf(),
+
+    // Historical burrow discovery log - every confirmed burrow location we've ever
+    // seen (across all sessions), used by BurrowPrediction to weight which unexplored
+    // areas have historically been more likely to host a chain. See BurrowPrediction.
+    var burrowRecords: MutableList<BurrowRecord> = mutableListOf(),
+)
+
+/**
+ * One tracked loadout's Crown of Avarice state, keyed by loadout name.
+ * See LoadoutCrownTracker for full design notes.
+ */
+data class CrownBaselineEntry(
+    // Mutable, not just a constructor val - a loadout can be renamed in-game,
+    // and LoadoutCrownTracker.handleReading() re-keys this entry in place when
+    // that happens (matching by uuid) instead of losing its history behind a
+    // duplicate "new" entry under the new name.
+    var loadoutName: String,
+    var uuid: String,
+    var coins: Long,
+    var lastSeenMs: Long,
+    var lastIncreaseMs: Long,
+    var confirmed: Boolean = false,
+    // Coins at the start of the current loot session (or event) - used to
+    // compute the per-crown delta shown in the DianaCrownTracker overlay.
+    // -1L means not yet set (first reading will initialise it).
+    var sessionBaseCoins: Long = -1L,
+    // What this physical crown cost - auto-detected from a purse decrease seen
+    // right when this uuid was first tracked (craft or AH purchase, mechanically
+    // indistinguishable from a coin-spend standpoint), or set manually via
+    // /sbocrown price. -1L means unset; CrownMarket.multiplierFor() then falls
+    // back to a 1.0x (raw coin) multiplier.
+    var costBasis: Long = -1L,
+    // How costBasis was determined - "AH_HISTORY" (found via this crown's own
+    // uuid in Coflnet's sale history - most reliable, works even for crowns
+    // acquired before this version), "PURSE_DETECTED" (a purse decrease seen
+    // live when the crown first appeared), "MANUAL" (/sbocrown price), or
+    // "UNSET". Gson gives a missing String field null on old saves, same as an
+    // explicit "UNSET" would mean, so no migration sentinel is needed here.
+    var costBasisSource: String = "UNSET",
+    // Lifetime credited gain/credit count for this physical crown - decides which
+    // confirmed crown is labelled "Damage Crown" vs "Magic Find Crown" (highest
+    // gain, most updates, wins the Damage Crown slot). See getConfirmedCrowns().
+    var totalGained: Long = 0L,
+    var updateCount: Int = 0,
+    // Gain since the current mayor term started - the per-crown counterpart to
+    // SboData.crownGainedEvent, reset alongside it in resetEventGain().
+    var eventGained: Long = 0L,
+    // Manual "Damage Crown" / "Magic Find Crown" override set via /sbocrown damage
+    // or /sbocrown magicfind - null means auto-rank by gain (see getConfirmedCrowns).
+    // A missing field on an old save deserializes to null either way, so no
+    // migration sentinel is needed here (unlike costBasis).
+    var role: String? = null,
+    // collected_coins already on this physical crown the first time it was seen
+    // under this uuid - e.g. a crown bought pre-filled off the AH. The multiplier
+    // should only be spread across the coins YOU deposited (capacity minus this),
+    // not the crown's full 1B capacity, or a pre-filled crown understates its real
+    // per-coin return. A missing field on an old save defaults to 0 (assume it
+    // started empty), which is the same as today's un-netted behavior - safe.
+    var startingCoins: Long = 0L
+)
+
+/**
+ * One confirmed burrow sighting, logged the moment BurrowDetector first registers it.
+ * Not deduplicated by position on purpose - a location showing up repeatedly across
+ * sessions is itself the signal BurrowPrediction's density weighting relies on.
+ */
+data class BurrowRecord(
+    var x: Int,
+    var y: Int,
+    var z: Int,
+    var type: String
 )
 
 data class AchievementsData(
@@ -195,12 +255,6 @@ data class PartyFinderData(
 // ------ Diana Data ------
 @Suppress("PropertyName")
 data class DianaItemsData(
-    // COINS, SCAVENGER_COINS, and FISH_COINS are LEGACY/DEAD for live tracking - the chat-message
-    // coin trackers that used to write to them were disabled once CrownOfAvariceTracker's NBT
-    // diffing replaced them (see CROWN_OF_AVARICE_RAW_COINS below, which is the only field
-    // anything live actually reads/writes now). These three are kept ONLY because
-    // PastEventsGui.kt still reads them to display the coin breakdown of events that were
-    // archived BEFORE this change - old, frozen historical records, not anything ongoing.
     @SerializedName("coins") var COINS: Long = 0,
     @SerializedName("Griffin Feather") var GRIFFIN_FEATHER: Int = 0,
     @SerializedName("Mythos Fragment") var MYTHOS_FRAGMENT: Int = 0,
@@ -230,8 +284,6 @@ data class DianaItemsData(
     @SerializedName("Total Burrows") var TOTAL_BURROWS: Int = 0,
     @SerializedName("scavengerCoins") var SCAVENGER_COINS: Long  = 0,
     @SerializedName("fishCoins") var FISH_COINS: Long  = 0,
-    // The only coin field anything live actually uses. See CrownOfAvariceTracker.
-    @SerializedName("crownOfAvariceRawCoins") var CROWN_OF_AVARICE_RAW_COINS: Long = 0,
     @SerializedName("time") var TIME: Long = 0,
     @SerializedName("KING_MINOS_SHARD") var KING_MINOS_SHARD: Int = 0,
     @SerializedName("SPHINX_SHARD") var SPHINX_SHARD: Int = 0,
@@ -338,6 +390,43 @@ data class PlayerStats(
 data class OverlayData(
     var overlays: MutableMap<String, OverlayValues> = mutableMapOf()
 )
+
+// ------ Sound Settings ------
+
+data class SoundSettingsData(
+    var rareMobSound: String = "",
+    var rareMobVolume: Float = 1.0f,
+    var inqSound: String = "",
+    var inqVolume: Float = 1.0f,
+    var sphinxSound: String = "",
+    var sphinxVolume: Float = 1.0f,
+    var kingSound: String = "",
+    var kingVolume: Float = 1.0f,
+    var mantiSound: String = "",
+    var mantiVolume: Float = 1.0f,
+    var cocoonSound: String = "",
+    var cocoonVolume: Float = 1.0f,
+    var burrowFoundSound: String = "",
+    var burrowVolume: Float = 1.0f,
+    var chimSound: String = "",
+    var chimVolume: Float = 1.0f,
+    var bfSound: String = "",
+    var bfVolume: Float = 1.0f,
+    var coreSound: String = "",
+    var coreVolume: Float = 1.0f,
+    var stingerSound: String = "",
+    var stingerVolume: Float = 1.0f,
+    var woolSound: String = "",
+    var woolVolume: Float = 1.0f,
+    var relicSound: String = "",
+    var relicVolume: Float = 1.0f,
+    var stickSound: String = "",
+    var stickVolume: Float = 1.0f,
+    var miscDropSound: String = "",
+    var miscDropVolume: Float = 1.0f
+) {
+    fun save() = SboDataObject.save("SoundSettingsData")
+}
 
 data class OverlayValues(
     var x: Float = 0f,

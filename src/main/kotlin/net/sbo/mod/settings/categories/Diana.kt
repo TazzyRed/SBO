@@ -4,7 +4,10 @@ import com.teamresourceful.resourcefulconfigkt.api.CategoryKt
 import com.teamresourceful.resourcefulconfigkt.api.ObservableEntry
 import gg.essential.universal.UScreen
 import net.sbo.mod.SBOKotlin.mc
+import net.sbo.mod.diana.LoadoutCrownTracker
+import net.sbo.mod.diana.TestTimer
 import net.sbo.mod.guis.PastEventsGui
+import net.sbo.mod.overlays.DianaCrownTracker
 import net.sbo.mod.overlays.DianaLoot
 import net.sbo.mod.overlays.DianaMobs
 import net.sbo.mod.overlays.DianaStats
@@ -29,7 +32,7 @@ object Diana : CategoryKt("Diana") {
     enum class SettingDiana {
         INSTASELL, SELLOFFER;
 
-        fun next(): SettingDiana {
+        operator fun next(): SettingDiana {
             return if (this == INSTASELL) {
                 SELLOFFER
             } else {
@@ -41,7 +44,7 @@ object Diana : CategoryKt("Diana") {
     enum class Tracker {
         OFF, TOTAL, EVENT, SESSION;
 
-        fun next(): Tracker {
+        operator fun next(): Tracker {
             val values = entries
             val currentIndex = ordinal
 
@@ -60,21 +63,27 @@ object Diana : CategoryKt("Diana") {
 
     var spadeGuess by boolean(true) {
         this.name = Literal("Spade Guess")
-        this.description = Literal("Guess the burrow location when using spade ability. Needs Dripping Lava Particles and set /particlequality to Extreme for more accuracy")
+        this.description = Literal("Guess the burrow location when using spade ability. Needs Dripping Lava Particles and set /particlequality to Extreme for more accuracy.")
     }
 
     var arrowGuess by boolean(true) {
         this.name = Literal("Arrow Guess")
-        this.description = Literal("Guesses the burrow location from the arrow direction after digging a burrow \n" +
-            "§bNOTE!: This replaces the old Multi guess system!\n" +
-            "§cHave Dust Particles enabled!\n" +
-            "§aDo every burrow you see for doing Diana the fastest way!"
+        this.description = Literal("Guesses the burrow location from the arrow direction after digging a burrow. \n" +
+            "§cHave Dust and Smoke Particles enabled and /particlequality extreme!\n" +
+            "§aDo every burrow you see and Use Spade when the mod tells you to for doing Diana the fastest way!"
         )
     }
 
     var closeBurrowDetection by boolean(true) {
         this.name = Literal("Close Burrow Detection")
-        this.description = Literal("Detects burrow locations when being close to them from the particles when holding shovel to register/update it as a Treasure, Mob or Start burrow. To reset waypoints type /sboclearburrows")
+        this.description = Literal("Detects burrow locations when being close to them from the particles when holding shovel to register/update it as a Treasure, Mob or Start burrow. Needs Critical Hit and Enchant particles, and set /particlequality extreme. To reset waypoints type /sboclearburrows.")
+    }
+
+    var predictBurrowChains by boolean(false) {
+        this.name = Literal("Predict Undiscovered Chains")
+        this.description = Literal(
+            "Experimental. Tracks where you've already swept a spade with nothing found, and once you're under 5 active chains, highlights likely ground blocks (plus a waypoint) in the most promising unexplored area - weighted by where burrows have historically shown up, not just distance. To reset the coverage data (not the burrow history) type /sboclearprediction."
+        )
     }
 
     init {
@@ -83,24 +92,44 @@ object Diana : CategoryKt("Diana") {
         }
     }
 
+    var showArrowSubGuesses by boolean(false) {
+        this.name = Literal("Show Arrow Sub Guesses")
+        this.description = Literal("Displays the other possible arrow guess locations as gray (configurable) waypoints until the active guess advances. This is not recommended for inexperienced users to reduce confusion and is so defaults to being disabled.")
+    }
+
+    var showTextOnSubGuess by boolean(false) {
+        this.name = Literal("Show Text On Sub Guess")
+        this.description = Literal("Shows \"Possible\" text on sub guesses in addition to the block higlight. Might increase visual clutter in exchange of making subguesses more visible.")
+    }
+
+    var drawOptimalOrderLines by boolean(false) {
+        this.name = Literal("Draw Optimal Order Lines")
+        this.description = Literal("Draws lines between burrows from closest to your current location to the farthest from current location (e.g., optimal order to do them in).")
+    }
+
     var showBeaconBeam by boolean(true) {
         this.name = Literal("Show Beacon Beam")
         this.description = Literal("Shows a beacon beam for waypoints going to the sky if enabled.")
     }
 
-    var showTitleWhenFailure by boolean(false) {
-        this.name = Literal("Show Title When Failure")
-        this.description = Literal("Shows a title to guess normally when the arrow guess fails to solve the burrow")
+    var beamDistance by int(8) {
+        this.name = Literal("Beacon Beam Distance")
+        this.description = Literal("Hide the beam when this many blocks or more close to it.")
     }
 
-    var showTitleWhenChainEnd by boolean(false) {
-        this.name = Literal("Show Title When Chain End")
-        this.description = Literal("Shows a title to guess normally when the burrow chain is complete and there's no more guesses or burrows at least 90 blocks nearby")
+    var showTitleWhenFailure by boolean(false) {
+        this.name = Literal("Show Title When Failure")
+        this.description = Literal("Shows a title to use spade when the arrow guess fails to solve the burrow. This might sometimes show wrongfully on a second solve attempt if the first was successfull and second failed for any reason.")
+    }
+
+    var showTitleWhenChainEnds by boolean(false) {
+        this.name = Literal("Show Title When Chain Ends")
+        this.description = Literal("Shows a title to use spade when the burrow chain is complete and there's no more guesses or burrows at least 90 blocks nearby, which will usually point to a new Start burrow to hold up your concurrent chains.")
     }
 
     var ongoingChainsDisplay by boolean(false) {
         this.name = Literal("Ongoing Chains Display")
-        this.description = Literal("Shows a display on screen with active chains amount. You can get up to 7 chains running at the same time, rarely 8 although one will finish very fast, going back to 7.")
+        this.description = Literal("Shows a display on screen with active chains amount. You can get up to 7 chains running at the same time.")
     }
 
     init {
@@ -122,10 +151,10 @@ object Diana : CategoryKt("Diana") {
 
     var dontWarpIfBurrowClose by boolean(true) {
         this.name = Literal("Don't Warp If a Burrow is nearby")
-        this.description = Literal("If enabled, the warp key will not warp you if you are within 60 blocks of a burrow")
+        this.description = Literal("If enabled, the warp key will not warp you if you are within 60 blocks of a burrow.")
     }
 
-    var warpDiff by int(10) {
+    var warpDiff by int(22) {
         this.range = 0..60
         this.slider = true
         this.name = Literal("Warp Block Difference")
@@ -141,6 +170,13 @@ object Diana : CategoryKt("Diana") {
         this.range = 0..150
         this.name = Literal("Bad Warp Distance")
         this.description = Literal("Blocks at which good warps are prioritized over bad ones (Currently only Castle and Crypt). For example, if you set it to 100, when the Crypt warp is the closest warp to a burrow, and the Castle is second closest, with Crypt warp being only 100 blocks or less closer than Castle, Castle will be preferred over Crypt warp for accessibility, as it can be faster to AOTV out of castle to reach the burrow whereas Crypt is longer to get out. (0 to disable)")
+    }
+
+    var warpClusterGap by int(80) {
+        this.range = 20..150
+        this.slider = true
+        this.name = Literal("Warp Cluster Gap")
+        this.description = Literal("When picking a warp with the guess warp key, burrows within this many blocks of each other on foot count as the same group. Warping now favors landing near the biggest nearby group over just the single closest burrow, even if that means landing a bit further from the very next one. Higher values chain more spread-out burrows together into one trip.")
     }
 
     init {
@@ -166,10 +202,10 @@ object Diana : CategoryKt("Diana") {
         enum(Tracker.OFF) {
             this.name = Literal("Mob Tracker")
             this.description = Literal(
-                "Shows your Diana mob kills, /sboguis to move the overlay\n" +
+                "Shows your Diana mob kills, /sboguis to move the overlay.\n" +
                 "§bNOTE!: You can interact with the tracker in the inventory!!!§r\n" +
-                "By clicking on a mob line you can hide/unhide it\n" +
-                "Hovering over some lines may display additional information"
+                "By clicking on a mob line you can hide/unhide it.\n" +
+                "Hovering over some lines may display additional information."
             )
         }
     ) { old, new ->
@@ -189,10 +225,10 @@ object Diana : CategoryKt("Diana") {
         enum(Tracker.EVENT) {
             this.name = Literal("Loot Tracker")
             this.description = Literal(
-                "Shows your Diana loot, /sboguis to move the overlay\n" +
+                "Shows your Diana loot, /sboguis to move the overlay.\n" +
                     "§bNOTE!: You can interact with the tracker in the inventory!!!§r\n" +
-                    "By clicking on a loot line you can hide/unhide it\n" +
-                    "Hovering over some lines may display additional information"
+                    "By clicking on a loot line you can hide/unhide it.\n" +
+                    "Hovering over some lines may display additional information."
             )
         }
     ) { old, new ->
@@ -211,6 +247,35 @@ object Diana : CategoryKt("Diana") {
     var excludeCoinsFromProfit by boolean(false) {
         this.name = Literal("Exclude Coins from Profit")
         this.description = Literal("Excludes coins from the loot tracker's profit calculation when enabled, useful if using a non-1B crown since coins are consumed.")
+    }
+
+    var enableLoadoutCrownTracker by boolean(true) {
+        this.name = Literal("Loadout Crown Tracking")
+        this.description = Literal("Tracks Crown of Avarice progress via the /loadout menu, burrow digs, and verified mob kills. Disable to turn off crown tracking entirely. The coin multiplier is computed automatically from Coflnet's current filled-crown market value and your crown's cost - use /sbocrown price <amount> if a crown's craft/purchase cost wasn't auto-detected. Which confirmed crown is labelled Damage vs Magic Find is auto-ranked by gain, or pin it yourself with /sbocrown damage / /sbocrown magicfind.")
+    }
+
+    var detachedCrownTracker by ObservableEntry(
+        boolean(false) {
+            this.name = Literal("Detach Crown Tracker")
+            this.description = Literal("Shows the Crown of Avarice tracker as its own overlay. Right-click the coin line while your inventory is open to toggle.")
+        }
+    ) { old, new ->
+        if (old != new) {
+            DianaLoot.updateLines()
+            DianaCrownTracker.updateLines()
+            if (new) LoadoutCrownTracker.resetDetachedSessionStats()
+        }
+    }
+
+    var testTimerEnabled by ObservableEntry(
+        boolean(false) {
+            this.name = Literal("1 Hour Session Timer")
+            this.description = Literal("Shows an on-screen notification when your session tracker hits 1 hour of active playtime. Useful for measuring stats over an exact time frame.")
+        }
+    ) { old, new ->
+        if (old != new) {
+            if (new) TestTimer.start() else TestTimer.cancel()
+        }
     }
 
     var hideUnobtainedItems by ObservableEntry(
@@ -250,12 +315,12 @@ object Diana : CategoryKt("Diana") {
 
     var statsTracker by boolean(false) {
         this.name = Literal("Diana Stats Tracker")
-        this.description = Literal("Shows stats like Mobs since Inquisitor, Inquisitors since Chimera, /sboguis to move the overlay")
+        this.description = Literal("Shows stats like Mobs since Inquisitor, Inquisitors since Chimera, /sboguis to move the overlay.")
     }
 
     var hideLsStats by ObservableEntry(boolean(false) {
             this.name = Literal("Hide LS Stats")
-            this.description = Literal("Hides the Loot Share (LS) portion of the Diana stats lines")
+            this.description = Literal("Hides the Loot Share (LS) portion of the Diana stats lines.")
         }
     ) { old, new ->
         if (old != new) {
@@ -265,17 +330,12 @@ object Diana : CategoryKt("Diana") {
 
     var resetSessionOnGameRestart by boolean(false) {
         this.name = Literal("Reset Session on Game Restart")
-        this.description = Literal("Resets the Diana session tracker when you restart Minecraft")
+        this.description = Literal("Resets the Diana session tracker when you restart Minecraft.")
     }
 
     var magicFindTracker by boolean(false) {
         this.name = Literal("Magic Find Tracker")
-        this.description = Literal("Shows your highest magic find for sticks and chimeras (only after you dropped it once), /sboguis to move the overlay")
-    }
-
-    var fourEyedFish by boolean(false) {
-        this.name = Literal("Four-Eyed Fish")
-        this.description = Literal("Set if you have a Four-Eyed Fish on your griffin pet")
+        this.description = Literal("Shows your highest magic find for sticks and chimeras (only after you dropped it once), /sboguis to move the overlay.")
     }
 
     var sendSinceMessage by boolean(true) {
@@ -285,7 +345,7 @@ object Diana : CategoryKt("Diana") {
 
     var bazaarSettingDiana by enum(SettingDiana.SELLOFFER) {
         this.name = Literal("Bazaar Setting")
-        this.description = Literal("Bazaar setting to set the price for loot")
+        this.description = Literal("Bazaar setting to set the price for loot.")
     }
 
     init {
@@ -296,94 +356,62 @@ object Diana : CategoryKt("Diana") {
 
     var lootAnnouncerChat by boolean(true) {
         this.name = Literal("Rare Drop Announcer")
-        this.description = Literal("Announces relic/shelmet/plushie/remedies in chat")
+        this.description = Literal("Announces relic/shelmet/plushie/remedies in chat.")
+    }
+
+    var hiltDropMessage by boolean(true) {
+        this.name = Literal("Hilt of Revelations Drop Message")
+        this.description = Literal("Sends rare drop message for Hilt of Revelations, since Hypixel does not send one.")
     }
 
     var lootAnnouncerScreen by boolean(true) {
         this.name = Literal("Loot Screen Announcer")
-        this.description = Literal("Announces chimera/stick/relic on screen")
-    }
-
-    var lootAnnouncerPrice by ObservableEntry(boolean(true) {
-            this.name = Literal("Show Price Title")
-            this.description = Literal("Shows chimera/stick/relic price as a subtitle on screen")
-        }
-    ) { old, new ->
-        if (old != new) {
-            if (new) {
-                lootAnnouncerScreen = true
-            }
-        }
+        this.description = Literal("Announces chimera/stick/relic on screen.")
     }
 
     var lootAnnouncerParty by boolean(true) {
         this.name = Literal("Loot Party Announcer")
-        this.description = Literal("Announces chimera/wool/stinger/food in party chat")
+        this.description = Literal("Announces chimera/wool/stinger/food in party chat.")
     }
 
-    var chimMessageBool by boolean(false) {
-        this.name = Literal("Chim Message")
-        this.description = Literal("Enables custom chim message")
+    var customChimeraMessage by strings("") {
+        this.name = Literal("Custom Chimera Message")
+        this.description = Literal("Leave empty to use default. Use: {mf} for MagicFind, {amount} for drop Amount this event and {percentage} for chimera/inquis ratio.")
     }
 
-    var customChimMessage by strings("&6[SBO] &6&lRARE DROP! &dChimera! &b+{mf} ✯ Magic Find &b#{amount}") {
-        this.name = Literal("Custom Chim Message Text")
-        this.description = Literal("use: {mf} for MagicFind, {amount} for drop Amount this event and {percentage} for chimera/inquis ratio.")
+    var customManticoreMessage by strings("") {
+        this.name = Literal("Custom Manti-core Message")
+        this.description = Literal("Leave empty to use default. Use: {mf} for MagicFind, {amount} for drop amount this event and {percentage} for core/manti ratio.")
     }
 
-    var coreMessageBool by boolean(false) {
-        this.name = Literal("Manti-Core Message")
-        this.description = Literal("Enables custom Manti-Core message (core/manti)")
+    var customFatefulStingerMessage by strings("") {
+        this.name = Literal("Custom Fateful Stinger Message")
+        this.description = Literal("Leave empty to use default. Use: {mf} for MagicFind, {amount} for drop amount this event and {percentage} for stinger/manti ratio.")
     }
 
-    var customCoreMessage by strings("&6[SBO] &6&lRARE DROP! &6Manti-Core! &b+{mf} ✯ Magic Find &b#{amount}") {
-        this.name = Literal("Custom Manti-Core Message Text")
-        this.description = Literal("Use: {mf} for MagicFind, {amount} for drop amount this event and {percentage} for core/manti ratio.")
+    var customBrainFoodMessage by strings("") {
+        this.name = Literal("Custom Brain Food Message")
+        this.description = Literal("Leave empty to use default. Use: {mf} for MagicFind, {amount} for drop amount this event and {percentage} for food/sphinx ratio.")
     }
 
-    var stingerMessageBool by boolean(false) {
-        this.name = Literal("Fateful Stinger Message")
-        this.description = Literal("Enables custom Fateful Stinger message (stinger/manti)")
-    }
-
-    var customStingerMessage by strings("&6[SBO] &6&lRARE DROP! &dFateful Stinger! &b+{mf} ✯ Magic Find &b#{amount}") {
-        this.name = Literal("Custom Fateful Stinger Message Text")
-        this.description = Literal("Use: {mf} for MagicFind, {amount} for drop amount this event and {percentage} for stinger/manti ratio.")
-    }
-
-    var bfMessageBool by boolean(false) {
-        this.name = Literal("Brain Food Message")
-        this.description = Literal("Enables custom Brain Food message (food/sphinx)")
-    }
-
-    var customBfMessage by strings("&6[SBO] &6&lRARE DROP! &5Brain Food! &b+{mf} ✯ Magic Find &b#{amount}") {
-        this.name = Literal("Custom Brain Food Message Text")
-        this.description = Literal("Use: {mf} for MagicFind, {amount} for drop amount this event and {percentage} for food/sphinx ratio.")
-    }
-
-    var woolMessageBool by boolean(false) {
-        this.name = Literal("Shimmering Wool Message")
-        this.description = Literal("Enables custom Shimmering Wool message (wool/king)")
-    }
-
-    var customWoolMessage by strings("&6[SBO] &6&lRARE DROP! &6Shimmering Wool! &b+{mf} ✯ Magic Find &b#{amount}") {
-        this.name = Literal("Custom Shimmering Wool Message Text")
-        this.description = Literal("Use: {mf} for MagicFind, {amount} for drop amount this event and {percentage} for wool/king ratio.")
+    var customShimmeringWoolMessage by strings("") {
+        this.name = Literal("Custom Shimmering Wool Message")
+        this.description = Literal("Leave empty to use default. Use: {mf} for MagicFind, {amount} for drop amount this event and {percentage} for wool/king ratio.")
     }
 
     init {
         button {
             title = "Send All Test Messages"
             text = "Send Test"
-            description = "Sends a test message for all rare drop messages"
+            description = "Sends a test message for all rare drop messages."
             onClick {
                 if (Helper.checkCustomDropMessage("Chimera", 400).first) {
                     val drops = mutableListOf<String>()
-                    if (chimMessageBool) drops.add("Chimera")
-                    if (bfMessageBool) drops.add("Brain Food")
-                    if (woolMessageBool) drops.add("Wool")
-                    if (coreMessageBool) drops.add("Core")
-                    if (stingerMessageBool) drops.add("Stinger")
+                    if (customChimeraMessage.isNotEmpty()) drops.add("Chimera")
+                    if (customBrainFoodMessage.isNotEmpty()) drops.add("Brain Food")
+                    if (customShimmeringWoolMessage.isNotEmpty()) drops.add("Wool")
+                    if (customManticoreMessage.isNotEmpty()) drops.add("Core")
+                    if (customFatefulStingerMessage.isNotEmpty()) drops.add("Stinger")
 
                     for (drop: String in drops) {
                         Chat.chat(
@@ -397,28 +425,28 @@ object Diana : CategoryKt("Diana") {
 
     init {
         separator {
-            this.title = "Title Timings"
-            this.description = "Customize fade-in, display and fade-out ticks for titles"
+            this.title = "Rare Mob Title Timings"
+            this.description = "Customize fade-in, display and fade-out ticks for Rare Mob titles."
         }
     }
 
-    var rareTitleFadeIn by int(0) {
-        this.name = Literal("Rare Title Fade In")
-        this.description = Literal("Fade-in (ticks) for rare mob titles")
+    var rareMobTitleFadeInTime by int(0) {
+        this.name = Literal("Rare Mob Title Fade In Time")
+        this.description = Literal("Fade-in (ticks) for rare mob titles. Enter 0 in all three settings to disable the titles.")
         this.range = 0..100
         this.slider = true
     }
 
-    var rareTitleTime by int(90) {
-        this.name = Literal("Rare Title Time")
-        this.description = Literal("Display time (ticks) for rare mob titles")
+    var rareMobTitleStayTime by int(60) {
+        this.name = Literal("Rare Mob Title Stay Time")
+        this.description = Literal("Display time (ticks) for rare mob titles. Enter 0 in all three settings to disable the titles.")
         this.range = 0..100
         this.slider = true
     }
 
-    var rareTitleFadeOut by int(20) {
-        this.name = Literal("Rare Title Fade Out")
-        this.description = Literal("Fade-out (ticks) for rare mob titles")
+    var rareMobTitleFadeOutTime by int(0) {
+        this.name = Literal("Rare Mob Title Fade Out Time")
+        this.description = Literal("Fade-out (ticks) for rare mob titles. Enter 0 in all three settings to disable the titles.")
         this.range = 0..100
         this.slider = true
     }
@@ -426,25 +454,25 @@ object Diana : CategoryKt("Diana") {
     init {
         separator {
             this.title = "Diana Waypoints"
-            this.description =  "§bDisable View Bobbing in controls if lines are buggy"
+            this.description =  "§bDisable View Bobbing in controls if lines are buggy."
         }
     }
 
     var guessAndBurrowLine by boolean(true) {
         this.name = Literal("Guess & Burrow Line")
-        this.description = Literal("Draws line to the closest guess and/or burrow, Disable View Bobbing in controls if its buggy")
+        this.description = Literal("Draws line to the closest guess and/or burrow, Disable View Bobbing in controls if its buggy.")
     }
 
     var inqLine by boolean(true) {
         this.name = Literal("Rare Mob Line")
-        this.description = Literal("Draws line to rare mob waypoints, Disable View Bobbing in controls if its buggy")
+        this.description = Literal("Draws line to rare mob waypoints, Disable View Bobbing in controls if its buggy.")
     }
 
     var dianaLineWidth by int(5) {
         this.range = 1..20
         this.slider = true
         this.name = Literal("Diana Line Width")
-        this.description = Literal("The width of the lines drawn for Diana waypoints")
+        this.description = Literal("The width of the lines drawn for Diana waypoints.")
     }
 
     init {
@@ -455,94 +483,67 @@ object Diana : CategoryKt("Diana") {
 
     var shareRareMob by boolean(true) {
         this.name = Literal("Share Rare-Mob")
-        this.description = Literal("Sends the coordinates of rare mobs(King, Manti, Sphinx, Inq)to your party")
+        this.description = Literal("Sends the coordinates of rare mobs to your party. (King, Manti, Sphinx, Inq)")
     }
 
     var ShareMobs by select(ShareList.INQ, ShareList.MANTICORE, ShareList.KING, ShareList.SPHINX) {
         this.name = Literal("Select which Mobs to Share")
-        this.description = Literal("Select which mobs to share")
+        this.description = Literal("Select which mobs to share.")
     }
 
     var receiveRareMob by boolean(true) {
         this.name = Literal("Receive Rare-Mob")
-        this.description = Literal("Create a waypoint when someone in your party shares a rare mob(King, Manti, Sphinx, Inq)")
+        this.description = Literal("Create a waypoint when someone in your party shares a rare mob. (King, Manti, Sphinx, Inq)")
+    }
+
+    var scanWorldForRareMob by boolean(true) {
+        this.name = Literal("Scan World for Rare-Mob")
+        this.description = Literal("Create a waypoint when finding a rare mob entity in a loaded chunk automatically. (King, Manti, Sphinx, Inq)")
     }
 
     var ReceiveMobs by select(ReceiveList.INQ, ReceiveList.MANTICORE, ReceiveList.KING, ReceiveList.SPHINX, ReceiveList.OTHER) {
         this.name = Literal("Which Mobs to Receive")
         this.description = Literal(
-        "Select which mobs to receive\n" +
-            "§bOTHER = Rare mobs from players that don't ping with sbo (mainly skyhanni)"
+        "Select which mobs to receive.\n" +
+            "§bOTHER = Rare mobs from players that don't ping with sbo. (mainly skyhanni)"
         )
     }
 
     var HighlightRareMobs by boolean(true) {
         this.name = Literal("Highlight Rare Mobs")
-        this.description = Literal("Highlights rare mobs (King, Manti, Sphinx, Inq) with a glowing effect")
+        this.description = Literal("Highlights rare mobs (King, Manti, Sphinx, Inq) with a glowing effect.")
     }
 
-    var HighlightColor by color(
-        Color(0.0f, 0.964f, 1.0f).rgb) {
-        this.name = Literal("Highlight Color")
-        this.description = Literal("Color for the rare mob highlight effect")
-        this.allowAlpha = true
-    }
-
-    var allWaypointsAreInqs by boolean(false) {
-        this.name = Literal("All Waypoints are Rare Mobs")
-        this.description = Literal("All coordinates from chat are considered rare mobs (King, Manti, Sphinx, Inq)")
+    var translucentDeadMobs by boolean(false) {
+        this.name = Literal("Highlight Dead Mobs")
+        this.description = Literal("Fills a Diana mob's actual hitbox with a translucent red right after it dies, so it's unambiguous which one's dead while it's still despawning.")
     }
 
     var announceInqText by strings("") {
         this.name = Literal("Send Text On Inq Spawn")
-        this.description = Literal("Sends a text on Inq spawn 5 seconds after spawn, use {since} for mobs since mob, {chance} for mob chance")
+        this.description = Literal("Sends a text on Inq spawn 5 seconds after spawn, use {since} for mobs since mob, {chance} for mob chance.")
     }
 
     var announceMantiText by strings("") {
         this.name = Literal("Send Text On Manti Spawn")
-        this.description = Literal("Sends a text on Manti spawn 5 seconds after spawn, use {since} for mobs since mob, {chance} for mob chance")
+        this.description = Literal("Sends a text on Manti spawn 5 seconds after spawn, use {since} for mobs since mob, {chance} for mob chance.")
     }
 
     var announceSphinxText by strings("") {
         this.name = Literal("Send Text On Sphinx Spawn")
-        this.description = Literal("Sends a text on Sphinx spawn 5 seconds after spawn, use {since} for mobs since mob, {chance} for mob chance")
+        this.description = Literal("Sends a text on Sphinx spawn 5 seconds after spawn, use {since} for mobs since mob, {chance} for mob chance.")
     }
 
     var announceKingText by strings("") {
         this.name = Literal("Send Text On King Spawn")
-        this.description = Literal("Sends a text on King spawn 5 seconds after spawn, use {since} for mobs since mob, {chance} for mob chance")
-    }
-
-    var announceCocoon by boolean(true) {
-        this.name = Literal("Send Text On Cocoon")
-        this.description = Literal("Sends a text on cocoon")
-    }
-
-    var cocoonTitle by boolean(true) {
-        this.name = Literal("Show Title On Cocoon")
-        this.description = Literal("Shows a title on cocoon")
-    }
-
-    var hpAlert by double(0.0) {
-        this.name = Literal("HP Alert")
-        this.description = Literal("Sends a title alert when a Rare Mob is below the set HP value in Million (0 to disable)")
-    }
-
-    var noShurikenOverlay by boolean(true) {
-        this.name = Literal("No Shuriken Overlay")
-        this.description = Literal("Shows an overlay when the RareMob has no shuriken applied /sboguis to move it")
-    }
-
-    var NoShurikenMobs by select(NoShurikenList.INQ, NoShurikenList.MANTICORE, NoShurikenList.KING, NoShurikenList.SPHINX) {
-        this.name = Literal("Select which Mobs to Check")
-        this.description = Literal("Select which mobs to check for shuriken")
+        this.description = Literal("Sends a text on King spawn 5 seconds after spawn, use {since} for mobs since mob, {chance} for mob chance.")
     }
 
     init {
         button {
             title = "Send All Test Messages"
             text = "Send Test"
-            description = "Sends all test messages for the Rare Mob spawn message"
+            description = "Sends all test messages for the Rare Mob spawn message."
             onClick {
                 Chat.chat("Inq Message: " + Helper.getSpawnMessage(announceInqText[0], "inq"))
                 Chat.chat("Sphinx Message: " + Helper.getSpawnMessage(announceSphinxText[0], "sphinx"))
@@ -550,6 +551,31 @@ object Diana : CategoryKt("Diana") {
                 Chat.chat("King Message: " + Helper.getSpawnMessage(announceKingText[0], "king"))
             }
         }
+    }
+
+    var announceCocoon by boolean(true) {
+        this.name = Literal("Send Message On Cocoon")
+        this.description = Literal("Sends a message to party chat on cocoon.")
+    }
+
+    var cocoonTitle by boolean(true) {
+        this.name = Literal("Show Title On Cocoon")
+        this.description = Literal("Shows a title on cocoon.")
+    }
+
+    var hpAlert by double(0.0) {
+        this.name = Literal("HP Alert")
+        this.description = Literal("Sends a title alert when a Rare Mob is below the set HP value in Million. (0 to disable)")
+    }
+
+    var noShurikenOverlay by boolean(true) {
+        this.name = Literal("No Shuriken Overlay")
+        this.description = Literal("Shows an overlay when the RareMob has no shuriken applied, /sboguis to move it.")
+    }
+
+    var NoShurikenMobs by select(NoShurikenList.INQ, NoShurikenList.MANTICORE, NoShurikenList.KING, NoShurikenList.SPHINX) {
+        this.name = Literal("Select which Mobs to Check")
+        this.description = Literal("Select which mobs to check for shuriken.")
     }
 
     init {
@@ -560,7 +586,7 @@ object Diana : CategoryKt("Diana") {
 
     var mythosMobHp by boolean(true) {
         this.name = Literal("Mythos Mob HP")
-        this.description = Literal("Displays HP of mythological mobs near you. /sboguis to move it")
+        this.description = Literal("Displays HP of mythological mobs near you, /sboguis to move it.")
     }
 
     var sphinxSolver by boolean(true) {
@@ -570,4 +596,5 @@ object Diana : CategoryKt("Diana") {
                 "Theres also the option to us a keybind in the mc keybinds menu but §c⚠ USE AT YOUR OWN RISK ⚠"
         )
     }
+
 }
